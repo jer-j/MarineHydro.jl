@@ -1,0 +1,75 @@
+[KCS]
+length_m = 2.5
+beam_m = 0.350
+draft_m = 0.11739130434782609
+displacement_m3 = 0.06686902173913042
+wetted_area_m2 = 0.0
+block_coefficient = 0.651
+schmitz_x_over_length = -0.05851008196721311
+reference_Y_beta_mmg = 0.2252
+reference_N_beta_mmg = 0.1111
+reference_m_y_prime = 0.155164
+reference_J_z_prime = 0.009268
+derivative_reference = "Data Driven Identification of Ship Maneuvering Coefficients, OMAE2023-104644, Table 2"
+added_mass_reference = "Data Driven Identification of Ship Maneuvering Coefficients, OMAE2023-104644, Table 2"
+
+[KVLCC2]
+length_m = 2.5
+beam_m = 0.453125
+draft_m = 0.1625
+displacement_m3 = 0.14906978607177734
+wetted_area_m2 = 1.6597900390625
+block_coefficient = 0.810
+schmitz_x_over_length = -0.09500822950819672
+reference_Y_beta_mmg = 0.315
+reference_N_beta_mmg = 0.137
+reference_m_y_prime = 0.223
+reference_J_z_prime = 0.011
+derivative_reference = "Yasukawa and Yoshimura (2015), as transcribed in Kim et al. (2021), Table 4"
+added_mass_reference = "Motora chart estimates used by Yasukawa and Yoshimura (2015)"
+
+[DTMB5415]
+length_m = 5.72
+beam_m = 0.768
+draft_m = 0.248
+displacement_m3 = 0.554
+wetted_area_m2 = 4.861
+block_coefficient = 0.507
+schmitz_x_over_length = 0.0
+reference_Y_beta_mmg = 0.116
+reference_N_beta_mmg = 0.064
+reference_m_y_prime = "NaN"
+reference_J_z_prime = "NaN"
+derivative_reference = "DTMB-5415 Hydrodynamic Derivative Estimation Through Oblique Towing CFD Simulations (2026), Table 11 EFD at Fr=0.41"
+added_mass_reference = "No public zero-frequency value transcribed"
+
+[DTC]
+length_m = 5.976
+beam_m = 0.859
+draft_m = 0.244
+displacement_m3 = 0.827
+wetted_area_m2 = 6.243
+block_coefficient = 0.661
+schmitz_x_over_length = -0.08
+reference_Y_beta_mmg = "NaN"
+reference_N_beta_mmg = "NaN"
+reference_A22_over_rho_displacement = 0.70
+reference_m_y_prime = "NaN"
+reference_J_z_prime = "NaN"
+derivative_reference = "No public captive-test slope transcribed"
+added_mass_reference = "Mathematical models for ship manoeuvring under realistic environmental conditions (2025), approximate deep-water value"
+
+[Wigley]
+length_m = 2.5
+beam_m = 0.25
+draft_m = 0.156
+displacement_m3 = 0.043333333333333335
+wetted_area_m2 = 0.0
+block_coefficient = 0.4444444444444444
+schmitz_x_over_length = 0.0
+reference_Y_beta_mmg = 0.25828316403324155
+reference_N_beta_mmg = 0.1248
+reference_m_y_prime = "NaN"
+reference_J_z_prime = "NaN"
+derivative_reference = "Kijima et al. (1990) empirical formula, reproduced by Ayub (2021), Eq. 5.2"
+added_mass_reference = "No public zero-frequency value transcribed"

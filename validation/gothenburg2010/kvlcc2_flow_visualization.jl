@@ -99,9 +99,7 @@ function write_visualization_data(
         print(io, ",\"strips\":", length(grid.strips))
         print(io, ",\"boundary_residual\":")
         write_number(io, surge.boundary_residual)
-        print(io, ",\"x_positive\":\"bow\",\"incoming_flow\":\"negative_x\"")
-        print(io, ",\"free_surface_model\":\"unrestricted_infinite_depth\"")
-        print(io, ",\"free_surface_elevation\":0},\"mesh\":{\"x\":")
+        print(io, ",\"x_positive\":\"bow\",\"incoming_flow\":\"negative_x\"},\"mesh\":{\"x\":")
         write_number_vector(io, mesh.vertices[:, 1])
         print(io, ",\"y\":")
         write_number_vector(io, mesh.vertices[:, 2])
@@ -188,15 +186,6 @@ function main()
         max_steps=650,
         neighbor_count=10,
         maximum_surface_distance=0.06 * longitudinal_extent,
-    )
-    free_surface = wang_restricted_water_elevation(
-        [-0.5, 0.5],
-        [0.0, 0.0],
-        [0.0, 0.0],
-        1.0,
-    )
-    all(iszero, free_surface.elevation) || error(
-        "unrestricted Wang free-surface elevation must be zero",
     )
     write_visualization_data(
         output_path,

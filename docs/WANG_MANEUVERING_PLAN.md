@@ -149,7 +149,8 @@ The following capabilities are intentionally deferred:
 
 ## Current implementation status
 
-The code implements Stages 1 and 2 through:
+The code implements Stages 1 and 2 and the analytical-ellipsoid portion of
+Stage 3 through:
 
 - `solve_wang_maneuvering`
 - `evaluate_indirect_potential_gradient`
@@ -158,11 +159,18 @@ The code implements Stages 1 and 2 through:
 - `nondimensionalize_wang_derivatives`
 - `wang_restricted_water_elevation` for Wang et al.'s sectionwise continuity
   and Bernoulli equations
+- `ellipsoid_potential_coefficients` and `ellipsoid_added_mass` for the
+  classical triaxial-ellipsoid reference solution
+- `surface_piercing_ellipsoid_panel_grid` for a differentiable structured
+  lower-half ellipsoid mesh
 
 The current implementation also includes:
 
 - `solve_potential_flow_maneuvering` for independent sway and yaw potentials
 - `read_tecplot_structured_surfaces` and `read_gothenburg2010_mesh`
+- `read_plot3d_structured_surfaces`, `structured_surface_waterline_mesh`, and
+  `read_ascii_stl_waterline_mesh` for public DTMB 5415 and DTC geometry
+- `wigley_hull_panel_grid` for an AD-compatible analytic Wigley benchmark
 - `structured_sectional_area_curve` and `gothenburg_maximum_section` for an
   automatic Schmitz cutoff derived from the official structured hull surface
 - `MMGLinearHullDerivatives` and `mmg_to_wang_velocity_derivatives` for an
@@ -172,18 +180,26 @@ The current implementation also includes:
 - 1,984-panel surge-flow orientation and surface-streamline output
 - a cited KVLCC2 reference dataset containing the linear hull coefficients
   and experimental maneuver indices transcribed from Kim et al. (2021)
+- an ellipsoid mesh-refinement driver and a cross-method comparison against
+  the low-frequency limit of the independent radiation solver
+- native Julia/IJulia notebooks for the ellipsoid convergence plots and the
+  1,984-panel KVLCC2 bow, stern, and stagnation views
+- a Julia/IJulia public-hull notebook covering KCS, KVLCC2, DTMB 5415, DTC,
+  and Wigley geometry, derivatives, and added masses
 
 The tests exercise the low-level quadrature, potential-gradient trace, both
 boundary residuals, acceleration reciprocity, speed scaling, truncation mask,
 nondimensionalization, coordinate transformation, mirroring, and panel
-orientation. The mesh storage remains generic over concrete array and scalar
-types, including `ForwardDiff.Dual`, while retaining enough type information
-for specialization. JET optimization analysis reports zero findings for the
-boundary conditions, derivative integrals, benchmark importer, sectional-area
-cutoff, normalization conversion, complete BEM solves, restricted-water
-elevation, stagnation search, and surface-streamline tracer. The package-wide
-test suite passes 1,804 tests, including the existing Zygote and ForwardDiff
-coverage.
+orientation. The public-hull additions test formatted Plot3D parsing, exact
+waterline clipping, clustered ASCII STL import, Wigley volume convergence, and
+differentiated Wigley geometry. The mesh storage remains generic over concrete
+array and scalar types, including `ForwardDiff.Dual`, while retaining enough
+type information for specialization. JET optimization analysis reports zero
+findings for the maneuvering boundary conditions, derivative integrals,
+Gothenburg importer, sectional-area cutoff, normalization conversion, complete
+BEM solves, restricted-water correction, stagnation search, surface-streamline
+tracer, analytical ellipsoid coefficients, ellipsoid added mass, and
+structured ellipsoid mesh.
 
 The official-geometry KVLCC2 convergence outputs are bit-for-bit unchanged by
 the inference improvements. On the 480-panel mesh, automatic Schmitz
@@ -192,3 +208,13 @@ truncation gives $Y_v'=-0.021803$ and $N_v'=-0.009082$, within 6.48% and
 $Y_r'$ has the opposite sign, so that coefficient is not validated. Raw
 SIMMAN captive-test ingestion, a finer mesh study, and authoritative
 Mariner/Tokyo Maru geometry remain the next ship-data milestones.
+
+For the canonical ellipsoid with ``(a,b,c)=(3,1,0.8)`` m, the analytical
+lower-half sway added mass is ``3340.618`` kg at ``\rho=1000`` kg/m³. The
+default constant-panel Wang sequence reduces its error from ``+7.87\%`` at 32
+panels to ``+5.84\%`` at 200 panels. An independent 128-panel radiation
+calculation gives ``3321.805`` kg at ``\omega=0.01`` rad/s, a ``-0.563\%``
+analytical error, with damping at roundoff scale. This completes the
+analytical and low-frequency portions of Stage 3. The wall-sided canonical
+hull, systematic stern-cutoff sensitivity, and raw captive-test ingestion
+remain open validation gates.

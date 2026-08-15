@@ -181,10 +181,22 @@ Mariner and Tokyo Maru metadata from Wang et al. are recorded in
 the current automatic Schmitz-cutoff comparison are documented in
 [`validation/kvlcc2_maneuvering`](validation/kvlcc2_maneuvering).
 
+The cross-hull study in
+[`validation/public_hulls`](validation/public_hulls) adds checksum-pinned DTMB
+5415 and DTC geometry plus an analytic Wigley hull. It compares KCS, KVLCC2,
+DTMB 5415, DTC, and Wigley static-drift derivatives and sway-yaw added masses
+under consistent normalization.
+
 See [`examples/wang_open_deep_water.jl`](examples/wang_open_deep_water.jl) for
 a complete calculation and
 [`docs/WANG_MANEUVERING_PLAN.md`](docs/WANG_MANEUVERING_PLAN.md) for the
 governing equations, validation gates, and deferred scope.
+
+Executable Julia/IJulia notebooks for the high-resolution KVLCC2 bow and stern
+surface-flow views, analytical ellipsoid validation, and five-hull derivative
+and added-mass comparison are in
+[`notebooks`](notebooks). They load `Revise.jl` for interactive development and
+keep generated figures separate from the automated tests.
 
 6. **Differentiability** :
 For differentiability with respect to mesh dimension, use `paper/MeshGradients_singlebody.jl`

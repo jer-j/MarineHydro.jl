@@ -32,9 +32,14 @@ export Mesh, element, combine_meshes, +, wavebot_mesh
 include("benchmark_meshes.jl")
 export StructuredPanelGrid
 export read_tecplot_structured_surfaces, read_gothenburg2010_mesh
+export read_plot3d_structured_surfaces, structured_surface_waterline_mesh
+export read_ascii_stl_waterline_mesh
 export read_gothenburg2010_panel_grid
 export structured_sectional_area_curve, gothenburg_maximum_section
 export mesh_surface_area, mesh_signed_volume
+export ellipsoid_potential_coefficients, ellipsoid_added_mass
+export surface_piercing_ellipsoid_mesh, surface_piercing_ellipsoid_panel_grid
+export wigley_hull_mesh, wigley_hull_panel_grid
 
 include("bodies.jl")
 export FloatingBody, combine_floatingbodies, +

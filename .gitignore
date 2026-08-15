@@ -1,3 +1,6 @@
 ./Manifest.toml
 validation/gothenburg2010/data/
 validation/gothenburg2010/results/
+validation/wang2000/results/
+validation/public_hulls/data/
+validation/public_hulls/results/

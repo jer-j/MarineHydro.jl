@@ -122,9 +122,15 @@ julia --project=. \
 
 This uses 1,984 hull panels, four times the 480-panel derivative mesh. The JSON
 output stores the triangulated hull, complete body-relative velocity
-streamlines, the minimum-speed bow panel, and the unrestricted-water
-free-surface metadata. In MarineHydro coordinates the bow is positive ``x``
+streamlines, and the minimum-speed bow panel. In MarineHydro coordinates the bow is positive ``x``
 and the incoming water velocity is toward negative ``x``.
+
+The executable Julia notebook
+[`notebooks/kvlcc2_surface_flow.ipynb`](../../notebooks/kvlcc2_surface_flow.ipynb)
+runs the same 1,984-panel solve and renders separate full-hull, bow, and stern
+three-dimensional views. It marks the minimum-speed bow panel without a
+free-surface visualization. The notebook loads `Revise.jl` for interactive development; its generated PNG is
+kept under the ignored `results/` directory rather than in the test suite.
 
 On the complete public KVLCC2 structured grid, the current importer gives
 $\nabla/L_{pp}^3=0.00954121$, an error of $+0.00775\%$ relative to the
