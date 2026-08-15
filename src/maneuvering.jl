@@ -149,6 +149,175 @@ struct RigidBodyPotentialResult{P,S,G,R}
 end
 
 raw"""
+    WangRestrictedWaterResult
+
+Sectionwise restricted-water correction from Wang et al. (2000).
+`local_speed` is the accelerated longitudinal speed ``U_1(x)``, `elevation`
+is the local mean free-surface elevation ``\zeta(x)``, and `mean_elevation`
+is its waterline-beam-weighted longitudinal mean.
+"""
+struct WangRestrictedWaterResult{V,T}
+    local_speed::V
+    elevation::V
+    mean_elevation::T
+end
+
+function _trapezoidal_integral(coordinate, values)
+    integral_value = zero(promote_type(eltype(coordinate), eltype(values)))
+    for station in 1:(length(coordinate) - 1)
+        interval = abs(coordinate[station + 1] - coordinate[station])
+        integral_value += interval *
+            (values[station] + values[station + 1]) / 2
+    end
+    return integral_value
+end
+
+raw"""
+    wang_restricted_water_elevation(
+        coordinate,
+        section_area,
+        waterline_beam,
+        forward_speed;
+        channel_area=Inf,
+        channel_surface_width=Inf,
+        gravity=SETTINGS.g,
+    )
+
+Solve Wang et al.'s sectionwise continuity and Bernoulli correction,
+
+```math
+U_0A_0=U_1(x)\left[A_0-S(x)+\zeta(x)
+\left(W-B(x)\right)\right],
+\qquad
+\frac{U_0^2}{2}=\frac{U_1(x)^2}{2}+g\zeta(x).
+```
+
+Here ``A_0`` is the undisturbed channel cross-sectional area and ``W`` is its
+surface width. The subcritical root nearest ``U_0`` is selected. Setting both
+channel dimensions to `Inf` returns the unrestricted-water limit
+``U_1=U_0`` and ``\zeta=0``.
+
+This is the mean blockage and squat correction in section 2.2 of Wang et al.,
+not a finite-Froude-number wave-making solution.
+"""
+function wang_restricted_water_elevation(
+    coordinate::AbstractVector,
+    section_area::AbstractVector,
+    waterline_beam::AbstractVector,
+    forward_speed::Real;
+    channel_area::Real=Inf,
+    channel_surface_width::Real=Inf,
+    gravity::Real=SETTINGS.g,
+)
+    station_count = length(coordinate)
+    station_count >= 2 || throw(ArgumentError(
+        "at least two longitudinal stations are required",
+    ))
+    length(section_area) == station_count || throw(DimensionMismatch(
+        "coordinate and section_area must have equal length",
+    ))
+    length(waterline_beam) == station_count || throw(DimensionMismatch(
+        "coordinate and waterline_beam must have equal length",
+    ))
+    coordinate_difference = diff(coordinate)
+    all(coordinate_difference .> 0) || all(coordinate_difference .< 0) ||
+        throw(ArgumentError("coordinate must be strictly monotone"))
+    all(section_area .>= 0) || throw(ArgumentError(
+        "section_area must be nonnegative",
+    ))
+    all(waterline_beam .>= 0) || throw(ArgumentError(
+        "waterline_beam must be nonnegative",
+    ))
+    forward_speed > 0 || throw(ArgumentError(
+        "forward_speed must be positive",
+    ))
+    gravity > 0 || throw(ArgumentError("gravity must be positive"))
+
+    unrestricted = isinf(channel_area) && isinf(channel_surface_width)
+    isinf(channel_area) == isinf(channel_surface_width) || throw(ArgumentError(
+        "channel_area and channel_surface_width must both be finite or both Inf",
+    ))
+    T = promote_type(
+        eltype(coordinate),
+        eltype(section_area),
+        eltype(waterline_beam),
+        typeof(forward_speed),
+        typeof(gravity),
+    )
+    if unrestricted
+        local_speed = fill(convert(T, forward_speed), station_count)
+        elevation = zeros(T, station_count)
+        return WangRestrictedWaterResult(local_speed, elevation, zero(T))
+    end
+
+    channel_area > maximum(section_area) || throw(ArgumentError(
+        "channel_area must exceed every immersed section area",
+    ))
+    channel_surface_width > maximum(waterline_beam) || throw(ArgumentError(
+        "channel_surface_width must exceed every waterline beam",
+    ))
+    local_speed = Vector{T}(undef, station_count)
+    elevation = Vector{T}(undef, station_count)
+    for station in eachindex(coordinate)
+        area = section_area[station]
+        beam = waterline_beam[station]
+        if iszero(area)
+            local_speed[station] = forward_speed
+            elevation[station] = zero(T)
+            continue
+        end
+        width_difference = channel_surface_width - beam
+        surface_elevation(speed) =
+            (forward_speed^2 - speed^2) / (2 * gravity)
+        residual(speed) = speed * (
+            channel_area - area +
+            surface_elevation(speed) * width_difference
+        ) - forward_speed * channel_area
+        residual_derivative(speed) =
+            channel_area - area + surface_elevation(speed) * width_difference -
+            speed^2 * width_difference / gravity
+
+        lower_speed = convert(T, forward_speed)
+        upper_speed = lower_speed * (one(T) + convert(T, 1e-3))
+        bracketed = false
+        for _ in 1:100
+            if residual(upper_speed) >= 0
+                bracketed = true
+                break
+            end
+            residual_derivative(upper_speed) > 0 || break
+            upper_speed = forward_speed + 1.5 *
+                (upper_speed - forward_speed)
+        end
+        bracketed || throw(DomainError(
+            area,
+            "no subcritical restricted-water root exists at this section",
+        ))
+        for _ in 1:80
+            midpoint = (lower_speed + upper_speed) / 2
+            if residual(midpoint) < 0
+                lower_speed = midpoint
+            else
+                upper_speed = midpoint
+            end
+        end
+        local_speed[station] = (lower_speed + upper_speed) / 2
+        elevation[station] = surface_elevation(local_speed[station])
+    end
+    beam_integral = _trapezoidal_integral(coordinate, waterline_beam)
+    mean_elevation = iszero(beam_integral) ? zero(T) :
+        _trapezoidal_integral(
+            coordinate,
+            elevation .* waterline_beam,
+        ) / beam_integral
+    return WangRestrictedWaterResult(
+        local_speed,
+        elevation,
+        mean_elevation,
+    )
+end
+
+raw"""
     maneuvering_boundary_condition(
         mesh,
         motion;

@@ -130,6 +130,25 @@ yaw_potential = result.potentials.yaw
 derivatives = result.derivatives
 ```
 
+Wang et al.'s separate restricted-water continuity and Bernoulli correction is
+available as:
+
+```julia
+water_level = wang_restricted_water_elevation(
+    station_x,
+    section_area,
+    waterline_beam,
+    forward_speed;
+    channel_area,
+    channel_surface_width,
+)
+```
+
+It returns the sectionwise accelerated speed and mean water-level change. With
+the default unrestricted, infinite channel dimensions, it returns exactly
+``U_1=U_0`` and ``\zeta=0``. This is a blockage and squat model, not a
+finite-Froude-number wave-elevation solver.
+
 An experimental quasi-3D Head integral boundary-layer correction can be
 applied to the whole-hull result. The default is one-way; positive
 `coupling_iterations` enable an under-relaxed displacement-transpiration

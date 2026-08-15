@@ -112,6 +112,20 @@ julia --project=. \
 The output records the selected linearization, coupling residual, BEM
 residuals, and integrated differentiated transpiration flux.
 
+For the higher-resolution surge-flow orientation and surface-streamline data:
+
+```sh
+julia --project=. \
+  validation/gothenburg2010/kvlcc2_flow_visualization.jl \
+  --shape=32x17
+```
+
+This uses 1,984 hull panels, four times the 480-panel derivative mesh. The JSON
+output stores the triangulated hull, complete body-relative velocity
+streamlines, the minimum-speed bow panel, and the unrestricted-water
+free-surface metadata. In MarineHydro coordinates the bow is positive ``x``
+and the incoming water velocity is toward negative ``x``.
+
 On the complete public KVLCC2 structured grid, the current importer gives
 $\nabla/L_{pp}^3=0.00954121$, an error of $+0.00775\%$ relative to the
 published displacement. The faceted surface has $S/L_{pp}^2=0.270510$, which

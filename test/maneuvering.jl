@@ -95,6 +95,45 @@ end
         @test_throws ArgumentError wang_stern_mask(mesh, 0.0; bow_direction=:invalid)
     end
 
+    @testset "Wang restricted-water elevation" begin
+        coordinate = [-0.5, 0.0, 0.5]
+        section_area = [0.0, 0.02, 0.0]
+        waterline_beam = [0.0, 0.2, 0.0]
+        unrestricted = @inferred wang_restricted_water_elevation(
+            coordinate,
+            section_area,
+            waterline_beam,
+            1.0,
+        )
+        @test unrestricted.local_speed == ones(3)
+        @test unrestricted.elevation == zeros(3)
+        @test iszero(unrestricted.mean_elevation)
+
+        restricted = @inferred wang_restricted_water_elevation(
+            coordinate,
+            section_area,
+            waterline_beam,
+            1.0;
+            channel_area=1.0,
+            channel_surface_width=1.0,
+        )
+        @test restricted.local_speed[2] > 1
+        @test restricted.elevation[2] < 0
+        continuity_residual = restricted.local_speed[2] * (
+            1.0 - section_area[2] +
+            restricted.elevation[2] * (1.0 - waterline_beam[2])
+        ) - 1.0
+        @test abs(continuity_residual) < 1e-12
+        @test restricted.mean_elevation < 0
+        @test_throws ArgumentError wang_restricted_water_elevation(
+            coordinate,
+            section_area,
+            waterline_beam,
+            1.0;
+            channel_area=1.0,
+        )
+    end
+
     @testset "Dual-valued mesh compatibility" begin
         function yaw_mode_from_center(center_x)
             scale = one(center_x)

@@ -172,12 +172,15 @@ function trace_surface_streamline(
         "minimum_speed must be nonnegative",
     ))
     distance_limit = isnothing(maximum_surface_distance) ?
-        2 * characteristic_length : maximum_surface_distance
+        5 * characteristic_length : maximum_surface_distance
     distance_limit > 0 || throw(ArgumentError(
         "maximum_surface_distance must be positive",
     ))
 
     T = promote_type(eltype(point), eltype(velocity), eltype(mesh.centers))
+    lower_bound = [minimum(mesh.vertices[:, axis]) for axis in 1:3]
+    upper_bound = [maximum(mesh.vertices[:, axis]) for axis in 1:3]
+    bound_padding = 2 * ds
     point_rows = NTuple{3,T}[]
     speeds = T[]
     surface_point, local_velocity, distance = _interpolate_surface_velocity(
@@ -204,6 +207,8 @@ function trace_surface_streamline(
                 neighbor_count,
             )
         next_distance <= distance_limit || break
+        any(next_point .< lower_bound .- bound_padding) && break
+        any(next_point .> upper_bound .+ bound_padding) && break
         norm(next_point .- surface_point) > eps(Float64) * characteristic_length ||
             break
         surface_point = next_point

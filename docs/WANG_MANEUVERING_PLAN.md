@@ -36,6 +36,21 @@ G_0(\boldsymbol{x},\boldsymbol{\xi})
 in MarineHydro's internal normalization. The reflected source has the same
 sign, so the free-surface Neumann condition is satisfied exactly.
 
+Wang et al. also calculate a mean water-level change in restricted channels
+from sectionwise continuity and Bernoulli equations. MarineHydro exposes this
+as `wang_restricted_water_elevation`. In the present unrestricted limit,
+
+```math
+A_0,W\rightarrow\infty,
+\qquad U_1(x)\rightarrow U_0,
+\qquad \zeta(x)\rightarrow0.
+```
+
+Consequently, the zero-frequency double-body solution has a flat rigid free
+surface. A nonzero Kelvin-wave elevation would require the deferred steady
+finite-Froude-number free-surface problem and cannot be reconstructed from the
+current reflected-Rankine solution.
+
 The strict Wang derivatives are
 
 ```math
@@ -125,7 +140,8 @@ The following capabilities are intentionally deferred:
 
 - Finite-depth Green functions.
 - Channel sidewalls and restricted-water blockage.
-- Squat and water-level corrections.
+- Coupling the implemented sectionwise squat and water-level correction back
+  into the wetted geometry and derivative integrals.
 - Steady wave-making at finite Froude number.
 - Nonlinear derivatives such as `Y_vv` or `Y_vvv`.
 - Explicit viscous wakes and Kutta conditions.
@@ -140,6 +156,8 @@ The code implements Stages 1 and 2 through:
 - `wang_hydrodynamic_derivatives`
 - `wang_stern_mask`
 - `nondimensionalize_wang_derivatives`
+- `wang_restricted_water_elevation` for Wang et al.'s sectionwise continuity
+  and Bernoulli equations
 
 The current implementation also includes:
 
@@ -151,6 +169,7 @@ The current implementation also includes:
   explicit standard-MMG to Wang normalization conversion
 - checksum-verified KVLCC2 and KCS geometry acquisition
 - KVLCC2 geometry, derivative-convergence, and MMG-comparison drivers
+- 1,984-panel surge-flow orientation and surface-streamline output
 - a cited KVLCC2 reference dataset containing the linear hull coefficients
   and experimental maneuver indices transcribed from Kim et al. (2021)
 
@@ -159,11 +178,12 @@ boundary residuals, acceleration reciprocity, speed scaling, truncation mask,
 nondimensionalization, coordinate transformation, mirroring, and panel
 orientation. The mesh storage remains generic over concrete array and scalar
 types, including `ForwardDiff.Dual`, while retaining enough type information
-for specialization. JET optimization analysis reports zero findings for all
-12 checked paths, including the boundary conditions, derivative integrals,
-benchmark importer, sectional-area cutoff, normalization conversion, and both
-complete BEM solves. The package-wide test suite passes 1,749 tests, including
-the existing Zygote and ForwardDiff coverage.
+for specialization. JET optimization analysis reports zero findings for the
+boundary conditions, derivative integrals, benchmark importer, sectional-area
+cutoff, normalization conversion, complete BEM solves, restricted-water
+elevation, stagnation search, and surface-streamline tracer. The package-wide
+test suite passes 1,804 tests, including the existing Zygote and ForwardDiff
+coverage.
 
 The official-geometry KVLCC2 convergence outputs are bit-for-bit unchanged by
 the inference improvements. On the 480-panel mesh, automatic Schmitz
