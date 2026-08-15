@@ -124,6 +124,13 @@ independent unit-sway and unit-yaw potentials.
 residuals of the two indirect boundary-integral systems. `velocity_mask`
 identifies panels used for velocity-dependent derivatives. All
 acceleration-dependent derivatives use the complete mesh.
+
+`potentials` and `potential_gradients` always hold the *indirect* solution,
+because that is what supplies the surface potential-gradient trace needed by
+the velocity derivatives, the boundary layer and the streamline tracer. With
+the default `acceleration_formulation=:direct`, the acceleration derivatives in
+`derivatives` come from a separate direct solve and are therefore not
+reproducible from `potentials` alone.
 """
 struct PotentialFlowManeuveringResult{P,S,G,D,M,R}
     potentials::P
@@ -544,6 +551,13 @@ x``.
 `velocity_mask` implements the semi-empirical Schmitz stern truncation. Pass
 `nothing` to integrate the velocity-dependent derivatives over the whole hull.
 The acceleration-dependent derivatives always use the whole hull.
+
+This function reproduces Wang et al. (2000) exactly and is deliberately left on
+their uniform-stream linearization of the convective term and their
+``\phi_r\approx x\phi_2`` yaw approximation. For the corrected linearization
+and an independently solved yaw potential, use
+[`solve_potential_flow_maneuvering`](@ref) and
+[`potential_flow_hydrodynamic_derivatives`](@ref).
 """
 function wang_hydrodynamic_derivatives(
     mesh::Mesh,
@@ -639,6 +653,17 @@ Here ``j`` is sway or yaw and ``Q`` is sway force or yaw moment. This is the
 exact rigid-body yaw extension of the strict Wang approximation
 ``\phi_r\approx(x-x_0)\phi_v``. `velocity_mask` affects only the convective
 integrals.
+
+Pass `sway_gradient`, `yaw_gradient` and `surge_gradient` as complete
+``N\times3`` traces to linearize the steady pressure about the double-body base
+flow rather than about the undisturbed uniform stream — see
+[`steady_pressure_derivative`](@ref). Without them the two positional
+longitudinal-gradient vectors reproduce Wang et al.'s convective term exactly.
+
+`rotational_velocity_mask` supplies a separate truncation for ``Y_r`` and
+``N_r``. Wang et al. place the cut for the rotational derivatives further aft
+than the maximum-area section used for ``Y_v`` and ``N_v``; when it is not
+given, `velocity_mask` is used for all four.
 """
 function potential_flow_hydrodynamic_derivatives(
     mesh::Mesh,
@@ -651,6 +676,10 @@ function potential_flow_hydrodynamic_derivatives(
     x_reference::Real=0,
     y_reference::Real=0,
     velocity_mask::Union{Nothing,AbstractVector{Bool}}=nothing,
+    rotational_velocity_mask::Union{Nothing,AbstractVector{Bool}}=nothing,
+    surge_gradient::Union{Nothing,AbstractMatrix}=nothing,
+    sway_gradient::Union{Nothing,AbstractMatrix}=nothing,
+    yaw_gradient::Union{Nothing,AbstractMatrix}=nothing,
 )
     fields = (
         sway_potential=sway_potential,
@@ -665,10 +694,21 @@ function potential_flow_hydrodynamic_derivatives(
     end
     forward_speed >= 0 || throw(ArgumentError("forward_speed must be nonnegative"))
     rho > 0 || throw(ArgumentError("rho must be positive"))
+    isnothing(surge_gradient) ||
+        (!isnothing(sway_gradient) && !isnothing(yaw_gradient)) ||
+        throw(ArgumentError(
+            "sway_gradient and yaw_gradient are required alongside " *
+            "surge_gradient for the double-body linearization",
+        ))
 
     mask = isnothing(velocity_mask) ? trues(mesh.nfaces) : BitVector(velocity_mask)
     length(mask) == mesh.nfaces || throw(DimensionMismatch(
         "velocity_mask must contain one value per mesh face",
+    ))
+    rotational_mask = isnothing(rotational_velocity_mask) ? mask :
+        BitVector(rotational_velocity_mask)
+    length(rotational_mask) == mesh.nfaces || throw(DimensionMismatch(
+        "rotational_velocity_mask must contain one value per mesh face",
     ))
 
     g_v = maneuvering_boundary_condition(mesh, :sway)
@@ -683,24 +723,49 @@ function potential_flow_hydrodynamic_derivatives(
     acceleration_yaw_weight = g_r .* dS
     velocity_sway_weight = acceleration_sway_weight .* mask
     velocity_yaw_weight = acceleration_yaw_weight .* mask
+    rotational_sway_weight = acceleration_sway_weight .* rotational_mask
+    rotational_yaw_weight = acceleration_yaw_weight .* rotational_mask
 
     Y_vdot = rho * sum(sway_potential .* acceleration_sway_weight)
     Y_rdot = rho * sum(yaw_potential .* acceleration_sway_weight)
     N_vdot = rho * sum(sway_potential .* acceleration_yaw_weight)
     N_rdot = rho * sum(yaw_potential .* acceleration_yaw_weight)
 
-    Y_v = -rho * forward_speed * sum(
-        sway_longitudinal_gradient .* velocity_sway_weight,
-    )
-    Y_r = -rho * forward_speed * sum(
-        yaw_longitudinal_gradient .* velocity_sway_weight,
-    )
-    N_v = -rho * forward_speed * sum(
-        sway_longitudinal_gradient .* velocity_yaw_weight,
-    )
-    N_r = -rho * forward_speed * sum(
-        yaw_longitudinal_gradient .* velocity_yaw_weight,
-    )
+    # Without `surge_gradient` the pressure derivative collapses to
+    # ρU ∂φ_j/∂x, which is Wang et al.'s uniform-stream linearization. That
+    # branch keeps the original factored form so the discrete identity is
+    # reproduced bit for bit.
+    Y_v, Y_r, N_v, N_r = if isnothing(surge_gradient)
+        (
+            -rho * forward_speed * sum(
+                sway_longitudinal_gradient .* velocity_sway_weight,
+            ),
+            -rho * forward_speed * sum(
+                yaw_longitudinal_gradient .* rotational_sway_weight,
+            ),
+            -rho * forward_speed * sum(
+                sway_longitudinal_gradient .* velocity_yaw_weight,
+            ),
+            -rho * forward_speed * sum(
+                yaw_longitudinal_gradient .* rotational_yaw_weight,
+            ),
+        )
+    else
+        sway_pressure = steady_pressure_derivative(
+            mesh, :sway, sway_gradient, forward_speed;
+            rho, surge_gradient, x_reference, y_reference,
+        )
+        yaw_pressure = steady_pressure_derivative(
+            mesh, :yaw, yaw_gradient, forward_speed;
+            rho, surge_gradient, x_reference, y_reference,
+        )
+        (
+            -sum(sway_pressure .* velocity_sway_weight),
+            -sum(yaw_pressure .* rotational_sway_weight),
+            -sum(sway_pressure .* velocity_yaw_weight),
+            -sum(yaw_pressure .* rotational_yaw_weight),
+        )
+    end
 
     return WangHydrodynamicDerivatives(
         Y_vdot,
@@ -712,6 +777,137 @@ function potential_flow_hydrodynamic_derivatives(
         N_rdot,
         N_r,
     )
+end
+
+raw"""
+    steady_pressure_derivative(
+        mesh,
+        motion,
+        mode_gradient,
+        forward_speed;
+        rho=SETTINGS.rho,
+        surge_gradient=nothing,
+        x_reference=0,
+        y_reference=0,
+    )
+
+Return ``\partial p/\partial v_j``, the panelwise linearization of the steady
+pressure with respect to the sway velocity (`motion=:sway`) or the yaw rate
+(`motion=:yaw`).
+
+Working in the body frame, where the quasi-steady flow is stationary, the
+pressure is
+
+```math
+p=\rho\left(\boldsymbol{U}_b+\boldsymbol{\Omega}\times\boldsymbol{x}\right)
+\cdot\nabla\Phi-\tfrac12\rho|\nabla\Phi|^2 ,
+```
+
+with ``\Phi=U\phi_1+v\phi_v+r\phi_r`` the earth-frame disturbance potential.
+Linearizing about ``(U,0,0)`` gives, for the rigid-body velocity field
+``\boldsymbol{u}_j`` of mode ``j`` (``\boldsymbol{e}_y`` for sway,
+``\boldsymbol{e}_z\times(\boldsymbol{x}-\boldsymbol{x}_0)`` for yaw),
+
+```math
+\frac{\partial p}{\partial v_j}=\rho U\left(
+\frac{\partial\phi_j}{\partial x}
++\boldsymbol{u}_j\cdot\nabla\phi_1
+-\nabla\phi_1\cdot\nabla\phi_j\right).
+```
+
+With `surge_gradient=nothing` the base flow is taken to be the undisturbed
+uniform stream, ``\nabla\phi_1\equiv0``, which recovers Wang et al.'s
+``\rho U\,\partial\phi_j/\partial x`` exactly. Supplying the unit-surge
+potential-gradient trace from [`solve_rigid_body_potential`](@ref) linearizes
+about the complete double-body base flow instead, which is required to
+reproduce the exact ideal-flow Munk moment ``N_v=(A_{11}-A_{22})U``.
+"""
+function steady_pressure_derivative(
+    mesh::Mesh,
+    motion::Symbol,
+    mode_gradient::AbstractMatrix,
+    forward_speed::Real;
+    rho::Real=SETTINGS.rho,
+    surge_gradient::Union{Nothing,AbstractMatrix}=nothing,
+    x_reference::Real=0,
+    y_reference::Real=0,
+)
+    motion in (:sway, :yaw) || throw(ArgumentError("motion must be :sway or :yaw"))
+    size(mode_gradient) == (mesh.nfaces, 3) || throw(DimensionMismatch(
+        "mode_gradient must have size (mesh.nfaces, 3)",
+    ))
+    isnothing(surge_gradient) || size(surge_gradient) == (mesh.nfaces, 3) ||
+        throw(DimensionMismatch(
+            "surge_gradient must have size (mesh.nfaces, 3)",
+        ))
+
+    scale = rho * forward_speed
+    if isnothing(surge_gradient)
+        return scale .* mode_gradient[:, 1]
+    end
+
+    T = promote_type(eltype(mode_gradient), eltype(surge_gradient),
+                     eltype(mesh.centers), typeof(forward_speed), typeof(rho))
+    derivative = Vector{T}(undef, mesh.nfaces)
+    for panel in 1:mesh.nfaces
+        # Rigid-body velocity field of the mode, per unit v or r.
+        if motion === :sway
+            mode_x = zero(T)
+            mode_y = one(T)
+        else
+            mode_x = -(mesh.centers[panel, 2] - y_reference)
+            mode_y = mesh.centers[panel, 1] - x_reference
+        end
+        base_advection = mode_x * surge_gradient[panel, 1] +
+            mode_y * surge_gradient[panel, 2]
+        interaction = surge_gradient[panel, 1] * mode_gradient[panel, 1] +
+            surge_gradient[panel, 2] * mode_gradient[panel, 2] +
+            surge_gradient[panel, 3] * mode_gradient[panel, 3]
+        derivative[panel] = scale * (
+            mode_gradient[panel, 1] + base_advection - interaction
+        )
+    end
+    return derivative
+end
+
+raw"""
+    clarke_rotational_derivatives(Y_v_prime, beam, length, draft, block_coefficient)
+
+Return `(Y_r, N_r)` in Wang's nondimensionalization from Clarke's regressions,
+reproduced as equations (31) and (32) of Wang et al. (2000):
+
+```math
+Y_r'=\left(-\tfrac12+1.73\frac{B}{L}\right)Y_v',
+\qquad
+N_r'=0.08\,Y_v'+\tfrac14\left(1-0.938\,C_B\frac{B}{L}\right)
+\left(-\left(\frac{T}{L}\right)^2\right).
+```
+
+Wang et al. recommend these in preference to integrating the rotational
+velocity derivatives directly, because the two rotational coefficients require
+a truncation station further aft than the maximum-area section used for
+``Y_v'`` and ``N_v'``. `Y_v_prime` must already be in Wang's normalization,
+``Y_v/(\tfrac12\rho L^2U)``.
+"""
+function clarke_rotational_derivatives(
+    Y_v_prime::Real,
+    beam::Real,
+    length::Real,
+    draft::Real,
+    block_coefficient::Real,
+)
+    beam > 0 || throw(ArgumentError("beam must be positive"))
+    length > 0 || throw(ArgumentError("length must be positive"))
+    draft > 0 || throw(ArgumentError("draft must be positive"))
+    block_coefficient > 0 || throw(ArgumentError(
+        "block_coefficient must be positive",
+    ))
+    beam_ratio = beam / length
+    draft_ratio = draft / length
+    Y_r = (-1 / 2 + 1.73 * beam_ratio) * Y_v_prime
+    N_r = 0.08 * Y_v_prime +
+        (1 - 0.938 * block_coefficient * beam_ratio) * (-draft_ratio^2) / 4
+    return (Y_r=Y_r, N_r=N_r)
 end
 
 raw"""
@@ -786,6 +982,13 @@ in MarineHydro's internal normalization. Forward speed enters only through
 the convective Bernoulli term used in the velocity derivatives; it is not used
 in the boundary-integral operator. This is Wang's double-body approximation,
 not a steady wave-making calculation.
+
+This entry point reproduces the published method and is held fixed: it uses the
+indirect formulation throughout, Wang's uniform-stream linearization of the
+convective term, and the ``\phi_r\approx x\phi_2`` yaw approximation. For the
+corrected linearization, the better-conditioned acceleration derivatives, an
+independently solved yaw potential, and a separate rotational truncation
+station, use [`solve_potential_flow_maneuvering`](@ref).
 """
 function solve_wang_maneuvering(
     mesh::Mesh,
@@ -871,6 +1074,25 @@ The default reflected-Rankine kernel imposes a rigid free surface. Forward
 speed enters only through the convective Bernoulli terms and is absent from
 the boundary-integral operator. This method therefore remains a double-body
 approximation rather than a finite-Froude-number wave-making calculation.
+
+# Keywords
+
+- `acceleration_formulation=:direct` selects the boundary-element formulation
+  used for the acceleration derivatives. The velocity derivatives always need
+  the indirect source strengths, because that is what
+  [`evaluate_indirect_potential_gradient`](@ref) differentiates, but the
+  acceleration derivatives need only the surface potential and the direct
+  formulation resolves it far better on the same mesh: on a triaxial ellipsoid
+  the sway added-mass error falls from ``+4.0\%`` to ``-0.18\%`` at 512 panels.
+  Use `:indirect` to reproduce results from before this became the default.
+- `base_flow=:double_body` linearizes the steady pressure about the complete
+  double-body base flow, which requires an additional unit-surge solve and
+  reproduces the exact ideal-flow Munk moment. Use `:uniform_stream` for Wang
+  et al.'s published convective term, which converges to roughly ``0.91``
+  times the exact value.
+- `rotational_velocity_mask` truncates ``Y_r`` and ``N_r`` at a different
+  station from ``Y_v`` and ``N_v``, as Wang et al. prescribe. See also
+  [`clarke_rotational_derivatives`](@ref).
 """
 function solve_potential_flow_maneuvering(
     mesh::Mesh,
@@ -879,11 +1101,20 @@ function solve_potential_flow_maneuvering(
     x_reference::Real=0,
     y_reference::Real=0,
     velocity_mask::Union{Nothing,AbstractVector{Bool}}=nothing,
+    rotational_velocity_mask::Union{Nothing,AbstractVector{Bool}}=nothing,
+    acceleration_formulation::Symbol=:direct,
+    base_flow::Symbol=:double_body,
     green_functions=(Rankine(), RankineReflected()),
 )
     forward_speed >= 0 || throw(ArgumentError("forward_speed must be nonnegative"))
     rho > 0 || throw(ArgumentError("rho must be positive"))
     mesh.nfaces > 0 || throw(ArgumentError("mesh must contain at least one face"))
+    acceleration_formulation in (:direct, :indirect) || throw(ArgumentError(
+        "acceleration_formulation must be :direct or :indirect",
+    ))
+    base_flow in (:double_body, :uniform_stream) || throw(ArgumentError(
+        "base_flow must be :double_body or :uniform_stream",
+    ))
 
     mask = isnothing(velocity_mask) ? trues(mesh.nfaces) : BitVector(velocity_mask)
     length(mask) == mesh.nfaces || throw(DimensionMismatch(
@@ -923,10 +1154,39 @@ function solve_potential_flow_maneuvering(
     real_sources = real.(sources)
     real_sway_gradient = real.(sway_gradient)
     real_yaw_gradient = real.(yaw_gradient)
+
+    # The acceleration derivatives need only the surface potential, so they are
+    # taken from the better-conditioned direct formulation by default. The same
+    # single-layer operator is reused; only the double-layer operator differs.
+    acceleration_potentials = if acceleration_formulation === :direct
+        S_direct, D = assemble_matrices(
+            green_functions,
+            mesh,
+            wavenumber;
+            direct=true,
+        )
+        direct_potentials, _ = solve(D, S_direct, boundary_conditions; direct=true)
+        real.(direct_potentials)
+    else
+        real_potentials
+    end
+
+    surge_gradient = if base_flow === :double_body
+        solve_rigid_body_potential(
+            mesh,
+            :surge;
+            x_reference,
+            y_reference,
+            green_functions,
+        ).potential_gradient
+    else
+        nothing
+    end
+
     derivatives = potential_flow_hydrodynamic_derivatives(
         mesh,
-        real_potentials[:, 1],
-        real_potentials[:, 2],
+        acceleration_potentials[:, 1],
+        acceleration_potentials[:, 2],
         real_sway_gradient[:, 1],
         real_yaw_gradient[:, 1],
         forward_speed;
@@ -934,6 +1194,10 @@ function solve_potential_flow_maneuvering(
         x_reference,
         y_reference,
         velocity_mask=mask,
+        rotational_velocity_mask,
+        surge_gradient,
+        sway_gradient=real_sway_gradient,
+        yaw_gradient=real_yaw_gradient,
     )
 
     function relative_residual(column)

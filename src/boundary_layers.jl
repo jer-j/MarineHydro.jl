@@ -691,6 +691,87 @@ function solve_quasi3d_boundary_layer(
     )
 end
 
+raw"""
+    separation_stern_mask(grid, layer; mode=:per_strip, margin=0)
+
+Build a velocity-integral truncation mask from a computed boundary-layer
+solution, as a physically derived alternative to the semi-empirical Schmitz cut
+of [`wang_stern_mask`](@ref).
+
+Wang et al. justify their stern truncation by the vorticity shed from the after
+body, which unloads the stern pressures. That argument identifies *where* the
+cut belongs — at the onset of separation — but the maximum-area section is only
+a geometric proxy for it. Given a [`Quasi3DBoundaryLayerResult`](@ref) or a
+[`ThreeDimensionalBoundaryLayerResult`](@ref), the separation location is
+predicted rather than assumed.
+
+`mode` selects how the separation flags become a mask:
+
+- `:per_strip` keeps, on each strip independently, the panels upstream of that
+  strip's first separated station. This follows the three-dimensional
+  separation line, which on a full-form hull reaches much further forward near
+  the keel than near the waterline.
+- `:first_station` finds the most upstream separated panel anywhere on the hull
+  and applies that single longitudinal station as a plane cut, which is the
+  closest like-for-like comparison with `wang_stern_mask`.
+- `:none` keeps every panel, for a whole-hull reference.
+
+`margin` shifts the cut by a number of stations: positive values move it
+forward (more conservative, discarding more of the stern).
+
+Strips whose layer never separates are kept in full.
+"""
+function separation_stern_mask(
+    grid::StructuredPanelGrid,
+    separated::AbstractVector{Bool};
+    mode::Symbol=:per_strip,
+    margin::Integer=0,
+)
+    mesh = grid.mesh
+    length(separated) == mesh.nfaces || throw(DimensionMismatch(
+        "separated must contain one flag per mesh face",
+    ))
+    mode in (:per_strip, :first_station, :none) || throw(ArgumentError(
+        "mode must be :per_strip, :first_station, or :none",
+    ))
+    mode === :none && return trues(mesh.nfaces)
+
+    mask = trues(mesh.nfaces)
+    if mode === :per_strip
+        for strip in grid.strips
+            flags = [separated[panel] for panel in strip]
+            onset = findfirst(flags)
+            isnothing(onset) && continue
+            cut = max(1, onset - margin)
+            for local_index in cut:length(strip)
+                mask[strip[local_index]] = false
+            end
+        end
+        return mask
+    end
+
+    # :first_station — the most upstream separation anywhere sets one plane cut.
+    earliest = nothing
+    for strip in grid.strips
+        flags = [separated[panel] for panel in strip]
+        onset = findfirst(flags)
+        isnothing(onset) && continue
+        earliest = isnothing(earliest) ? onset : min(earliest, onset)
+    end
+    isnothing(earliest) && return mask
+    cut = max(1, earliest - margin)
+    cut_x = maximum(
+        mesh.centers[strip[min(cut, length(strip))], 1] for strip in grid.strips
+    )
+    for panel in 1:mesh.nfaces
+        mask[panel] = mesh.centers[panel, 1] >= cut_x
+    end
+    return mask
+end
+
+separation_stern_mask(grid::StructuredPanelGrid, layer; kwargs...) =
+    separation_stern_mask(grid, collect(Bool, layer.separated); kwargs...)
+
 function _velocity_derivative_sum(first::ViscousManeuveringDerivatives, second)
     return ViscousManeuveringDerivatives(
         first.Y_v + second.Y_v,

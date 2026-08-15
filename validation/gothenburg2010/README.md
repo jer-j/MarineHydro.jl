@@ -63,74 +63,48 @@ converts them to MarineHydro's $x$-forward, $y$-port convention:
 
 ## Running the checks
 
-For geometry only:
+Everything that used to live in `kvlcc2_convergence.jl`,
+`kvlcc2_boundary_layer_validation.jl` and `kvlcc2_flow_visualization.jl` is now
+in one executable notebook:
 
-```sh
-julia --project=. validation/gothenburg2010/kvlcc2_convergence.jl --geometry-only
-```
+[`notebooks/02_kvlcc2_viscous_correction.ipynb`](../../notebooks/02_kvlcc2_viscous_correction.ipynb)
 
-For the strict Wang and independent-yaw BEM calculations:
+It covers, in order:
 
-```sh
-julia --project=. validation/gothenburg2010/kvlcc2_convergence.jl
-```
+- **Geometry convergence** — wetted surface and displaced volume against the
+  published values, from the coarsest resampling up to the native structured
+  grid.
+- **Double-body surge flow** — a 1,984-panel solve rendered as full-hull, bow
+  and stern three-dimensional views, marking the minimum-speed bow panel and
+  tracing surface streamlines. In MarineHydro coordinates the bow is positive
+  $x$ and the incoming water velocity is toward negative $x$. No free-surface
+  elevation is drawn: this is the zero-frequency double-body limit, and a wave
+  pattern would require a steady finite-Froude-number free-surface solve that
+  the model does not contain.
+- **Boundary-layer verification** — the Head closure against the turbulent
+  flat-plate 1/5-power laws, and the quasi-3D strip march against the ITTC-1957
+  friction line at $Re = 4.6\times10^{6}$. The predicted $C_F$ is $0.947$–$0.950$
+  times ITTC-57 and is mesh-independent across a sevenfold change in panel
+  count.
+- **Derivative comparison** — whole-hull inviscid, Schmitz-truncated, Head shear,
+  Head displacement-pressure and combined results reported as separate rows, so
+  the Schmitz and physical boundary-layer corrections are never silently counted
+  twice. The reference is the KVLCC2 MMG coefficient set transcribed from Kim et
+  al. (2021); see the
+  [KVLCC2 maneuvering reference](../kvlcc2_maneuvering/README.md) for the
+  normalization, coordinate mapping and limitations.
 
-Add `--fine` for two additional derivative meshes. CSV outputs are written to
-the ignored `results/` directory. The derivative run also writes
-`kvlcc2_mmg_velocity_comparison.csv`, which compares whole-hull and automatic
-Schmitz-truncated velocity derivatives with the KVLCC2 MMG coefficients
-transcribed from Kim et al. (2021). See the
-[KVLCC2 maneuvering reference](../kvlcc2_maneuvering/README.md) for the
-normalization, coordinate mapping, numerical results, and limitations.
-
-For the Head integral boundary-layer correction:
-
-```sh
-julia --project=. \
-  validation/gothenburg2010/kvlcc2_boundary_layer_validation.jl
-```
-
-This writes `results/kvlcc2_boundary_layer_comparison.csv`. It keeps the
-whole-hull inviscid, Schmitz, direct shear, displacement-pressure, and combined
-results separate so the Schmitz and physical boundary-layer corrections are not
-silently counted twice. The experimental local-flow conditions and available
-measurement locations from Case 1.1a are transcribed in
-`local_flow_reference.toml`. See
+Figures and CSVs are written to the ignored `results/` directory. The
+experimental local-flow conditions and measurement locations from Case 1.1a are
+transcribed in `local_flow_reference.toml`. See
 [`docs/INTEGRAL_BOUNDARY_LAYER.md`](../../docs/INTEGRAL_BOUNDARY_LAYER.md) for
-the equations, assumptions, and validation boundary.
+the equations, assumptions and validation boundary.
 
-The default is a reproducible one-way correction. A relaxed FlightStream-style
-viscous-inviscid iteration can be exercised at one resolution with
-
-```sh
-julia --project=. \
-  validation/gothenburg2010/kvlcc2_boundary_layer_validation.jl \
-  --shape=8x5 --coupling-iterations=8 \
-  --output=validation/gothenburg2010/results/kvlcc2_boundary_layer_coupled.csv
-```
-
-The output records the selected linearization, coupling residual, BEM
-residuals, and integrated differentiated transpiration flux.
-
-For the higher-resolution surge-flow orientation and surface-streamline data:
-
-```sh
-julia --project=. \
-  validation/gothenburg2010/kvlcc2_flow_visualization.jl \
-  --shape=32x17
-```
-
-This uses 1,984 hull panels, four times the 480-panel derivative mesh. The JSON
-output stores the triangulated hull, complete body-relative velocity
-streamlines, and the minimum-speed bow panel. In MarineHydro coordinates the bow is positive ``x``
-and the incoming water velocity is toward negative ``x``.
-
-The executable Julia notebook
-[`notebooks/kvlcc2_surface_flow.ipynb`](../../notebooks/kvlcc2_surface_flow.ipynb)
-runs the same 1,984-panel solve and renders separate full-hull, bow, and stern
-three-dimensional views. It marks the minimum-speed bow panel without a
-free-surface visualization. The notebook loads `Revise.jl` for interactive development; its generated PNG is
-kept under the ignored `results/` directory rather than in the test suite.
+The notebook uses the reproducible one-way correction. A relaxed
+FlightStream-style viscous–inviscid iteration is available by passing
+`coupling_iterations=8` to `viscous_maneuvering_correction`; the result records
+the selected linearization, the coupling residual, the BEM residuals and the
+integrated differentiated transpiration flux.
 
 On the complete public KVLCC2 structured grid, the current importer gives
 $\nabla/L_{pp}^3=0.00954121$, an error of $+0.00775\%$ relative to the
@@ -161,10 +135,10 @@ Y_{\dot v,W}'=-\frac{T}{L_{pp}}m_y'=-0.014495,
 N_{\dot r,W}'=-\frac{T}{L_{pp}}J_z'=-0.000715.
 ```
 
-On the 480-panel mesh, the current independent-potential solution gives
-$Y_{\dot v}'=-0.015358$ and $N_{\dot r}'=-0.000822$, differences of $5.95\%$
-and $14.96\%$ from those MMG values. The strict Wang yaw approximation gives
+On the 480-panel mesh, `solve_potential_flow_maneuvering` gives
+$Y_{\dot v}'=-0.015104$ and $N_{\dot r}'=-0.000808$, differences of $4.20\%$
+and $12.97\%$ from those MMG values. The strict Wang yaw approximation gives
 $N_{\dot r}'=-0.000972$, a $35.9\%$ difference. This is encouraging but is not
 an experimental validation: the MMG paper states that its added-mass values
 were estimated from Motora's empirical charts, and the BEM sequence is still
-coarse. The convergence CSV labels these quantities as estimates.
+coarse.

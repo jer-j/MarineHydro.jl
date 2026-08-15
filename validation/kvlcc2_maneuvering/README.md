@@ -59,15 +59,11 @@ relevant Wang comparison uses Schmitz truncation at the aft end of the
 maximum-area region. `gothenburg_maximum_section` derives that cutoff from the
 official structured KVLCC2 surface rather than selecting a station by hand.
 
-Run the fine comparison with:
-
-```sh
-julia --project=. validation/gothenburg2010/kvlcc2_convergence.jl --fine
-```
-
-This writes the long-form
-`validation/gothenburg2010/results/kvlcc2_mmg_velocity_comparison.csv` in
-addition to the existing geometry and BEM convergence files.
+Run the comparison from
+[`notebooks/02_kvlcc2_viscous_correction.ipynb`](../../notebooks/02_kvlcc2_viscous_correction.ipynb),
+which reports whole-hull, Schmitz-truncated and viscously corrected velocity
+derivatives against the values below over a four-mesh sequence, and writes its
+figures to `validation/gothenburg2010/results/`.
 
 ## Current comparison
 
@@ -76,22 +72,32 @@ $x_{cut}/L_{pp}=-0.095008$ at the aft end of the near-maximum-area region.
 The discrete maximum itself is at $x/L_{pp}=-0.077759$. The cutoff retains
 256 of the 480 panels in the velocity-dependent surface integrals.
 
-The independent unit-sway and unit-yaw calculation gives:
+The independent unit-sway and unit-yaw calculation, with the current
+`base_flow = :double_body` and `acceleration_formulation = :direct` defaults,
+gives:
 
 | Coefficient | Schmitz BEM | Table 4 converted | Relative difference |
 |---|---:|---:|---:|
-| $Y_v'$ | -0.021803 | -0.020475 | 6.48% |
-| $Y_r'$ | -0.002195 | +0.005395 | 140.69%, opposite sign |
-| $N_v'$ | -0.009082 | -0.008905 | 1.98% |
-| $N_r'$ | -0.002533 | -0.003185 | 20.48% |
+| $Y_v'$ | -0.018794 | -0.020475 | 8.21% |
+| $Y_r'$ | -0.001299 | +0.005395 | 124.08%, opposite sign |
+| $N_v'$ | -0.007785 | -0.008905 | 12.58% |
+| $N_r'$ | -0.002078 | -0.003185 | 34.76% |
 
-For comparison, the strict Wang yaw approximation gives $Y_r'=+0.000830$.
-It has the reference sign but is 84.62% smaller in magnitude. Its other three
-relative differences are 6.48%, 6.70%, and 25.72%, respectively.
+Clarke's regressions, which is what Wang et al. actually recommend for the
+rotational pair, give $Y_r'=+0.003817$ and $N_r'=-0.002549$ from the reference
+$Y_v'$ — correct signs and within 30%. See `clarke_rotational_derivatives`.
 
-The truncation is essential. In the independent-potential calculation,
-whole-hull integration gives $Y_v'=+0.000686$ and $N_v'=-0.017252$;
-Schmitz integration changes these to $-0.021803$ and $-0.009082$. The
-latter values are much closer to the model-test-derived MMG coefficients.
-This result supports the implementation of Wang's stated integration domain,
-but it does not validate $Y_r'$ and it is not a substitute for raw PMM data.
+The truncation is essential. Whole-hull integration gives $Y_v'=+0.001111$ and
+$N_v'=-0.014839$; Schmitz integration changes these to $-0.018794$ and
+$-0.007785$, much closer to the model-test-derived MMG coefficients. This
+supports the implementation of Wang's stated integration domain, but it does
+not validate $Y_r'$ and it is not a substitute for raw PMM data.
+
+These numbers moved when the incomplete steady linearization was corrected (see
+`docs/WANG_MANEUVERING_PLAN.md`). Under Wang's original uniform-stream form the
+same mesh gave $Y_v'=-0.021803$ and $N_v'=-0.009082$, i.e. 6.48% and 1.98% from
+the references — *better* agreement than the more correct linearization
+produces. That earlier agreement was partly a cancellation between the
+linearization error and the error in the semi-empirical stern cut, which is a
+reason to treat the truncated velocity derivatives as calibrated rather than
+predicted.

@@ -69,6 +69,7 @@ export RigidBodyPotentialResult, solve_rigid_body_potential
 export WangRestrictedWaterResult, wang_restricted_water_elevation
 export maneuvering_boundary_condition, wang_sway_boundary_condition
 export evaluate_indirect_potential_gradient
+export steady_pressure_derivative, clarke_rotational_derivatives
 export wang_hydrodynamic_derivatives, nondimensionalize_wang_derivatives
 export nondimensionalize_maneuvering_derivatives
 export potential_flow_hydrodynamic_derivatives
@@ -82,6 +83,7 @@ export head_kinetic_shape_factor, head_skin_friction_coefficient
 export head_entrainment_coefficient, solve_head_boundary_layer
 export body_relative_edge_velocity, solve_quasi3d_boundary_layer
 export viscous_maneuvering_correction, apply_viscous_correction
+export separation_stern_mask
 export nondimensionalize_viscous_derivatives
 
 include("surface_streamlines.jl")

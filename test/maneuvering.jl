@@ -402,4 +402,140 @@ end
         )
         @test dN_r_dU ≈ result.derivatives.N_r / 2.0
     end
+
+    @testset "Clarke rotational regressions" begin
+        # Wang et al. (2000), equations (31) and (32).
+        Y_v = -0.020475
+        beam, length_pp, draft, block = 58.0, 320.0, 20.8, 0.81
+        clarke = clarke_rotational_derivatives(Y_v, beam, length_pp, draft, block)
+        beam_ratio = beam / length_pp
+        draft_ratio = draft / length_pp
+        @test clarke.Y_r ≈ (-0.5 + 1.73 * beam_ratio) * Y_v
+        @test clarke.N_r ≈ 0.08 * Y_v +
+            (1 - 0.938 * block * beam_ratio) * (-draft_ratio^2) / 4
+        # Clarke corrects the sign error that direct truncated integration
+        # produces for KVLCC2, and lands within 30% of the model-test values.
+        @test clarke.Y_r > 0
+        @test clarke.N_r < 0
+        @test isapprox(clarke.Y_r, 0.005395; rtol=0.30)
+        @test isapprox(clarke.N_r, -0.003185; rtol=0.30)
+        @test_throws ArgumentError clarke_rotational_derivatives(
+            Y_v, -1.0, length_pp, draft, block,
+        )
+    end
+
+    @testset "Steady pressure linearization" begin
+        mesh = wetted_box_mesh()
+        speed = 2.5
+        rho = 1000.0
+        gradient = hcat(
+            collect(1.0:mesh.nfaces),
+            collect(2.0:(mesh.nfaces + 1)),
+            collect(3.0:(mesh.nfaces + 2)),
+        )
+        # Without a base-flow gradient the result must be exactly Wang's term.
+        @test steady_pressure_derivative(
+            mesh, :sway, gradient, speed; rho,
+        ) == rho * speed .* gradient[:, 1]
+        @test steady_pressure_derivative(
+            mesh, :yaw, gradient, speed; rho,
+        ) == rho * speed .* gradient[:, 1]
+        # A uniform base-flow gradient adds u_j·∇φ₁ − ∇φ₁·∇φ_j.
+        surge_gradient = zeros(mesh.nfaces, 3)
+        surge_gradient[:, 2] .= 0.5
+        sway_expected = rho * speed .* (
+            gradient[:, 1] .+ 0.5 .- 0.5 .* gradient[:, 2]
+        )
+        @test steady_pressure_derivative(
+            mesh, :sway, gradient, speed; rho, surge_gradient,
+        ) ≈ sway_expected
+        yaw_expected = rho * speed .* (
+            gradient[:, 1] .+ 0.5 .* mesh.centers[:, 1] .- 0.5 .* gradient[:, 2]
+        )
+        @test steady_pressure_derivative(
+            mesh, :yaw, gradient, speed; rho, surge_gradient,
+        ) ≈ yaw_expected
+        @test_throws ArgumentError steady_pressure_derivative(
+            mesh, :heave, gradient, speed; rho,
+        )
+    end
+
+    @testset "Munk moment and formulation defaults" begin
+        semi_axes = (3.0, 1.0, 0.8)
+        rho = 1000.0
+        speed = 1.0
+        mesh = surface_piercing_ellipsoid_mesh(
+            semi_axes; longitudinal_panels=24, girth_panels=12,
+        )
+        coefficients = ellipsoid_potential_coefficients(semi_axes)
+        volume = 4pi * prod(semi_axes) / 3
+        A11 = rho * volume * coefficients[1] / (2 - coefficients[1])
+        A22 = rho * volume * coefficients[2] / (2 - coefficients[2])
+        # The surface-piercing lower half against a rigid free surface is the
+        # full ellipsoid, so every integral is half the full-body value.
+        analytical_added_mass = A22 / 2
+        munk_moment = (A11 - A22) * speed / 2
+
+        default = solve_potential_flow_maneuvering(mesh, speed; rho)
+        legacy = solve_potential_flow_maneuvering(
+            mesh, speed; rho,
+            acceleration_formulation=:indirect,
+            base_flow=:uniform_stream,
+        )
+
+        # Ideal flow produces no sway damping, in either linearization.
+        @test abs(default.derivatives.Y_v) < 1e-8 * abs(munk_moment)
+        @test abs(legacy.derivatives.Y_v) < 1e-8 * abs(munk_moment)
+
+        # The complete linearization recovers the exact Munk moment; the
+        # uniform-stream form converges to roughly 0.91 of it.
+        @test isapprox(default.derivatives.N_v, munk_moment; rtol=0.01)
+        @test legacy.derivatives.N_v / munk_moment < 0.93
+
+        # The direct formulation resolves the added mass far better.
+        default_error = abs(-default.derivatives.Y_vdot / analytical_added_mass - 1)
+        legacy_error = abs(-legacy.derivatives.Y_vdot / analytical_added_mass - 1)
+        @test default_error < 0.01
+        @test legacy_error > 0.04
+        @test default_error < legacy_error / 5
+
+        @test_throws ArgumentError solve_potential_flow_maneuvering(
+            mesh, speed; rho, acceleration_formulation=:mixed,
+        )
+        @test_throws ArgumentError solve_potential_flow_maneuvering(
+            mesh, speed; rho, base_flow=:kelvin,
+        )
+    end
+
+    @testset "Separate rotational truncation" begin
+        mesh = surface_piercing_ellipsoid_mesh(
+            (3.0, 1.0, 0.8); longitudinal_panels=12, girth_panels=6,
+        )
+        speed = 1.5
+        rho = 1000.0
+        translational = wang_stern_mask(mesh, -1.0)
+        rotational = wang_stern_mask(mesh, 0.5)
+        @test translational != rotational
+        shared = solve_potential_flow_maneuvering(
+            mesh, speed; rho, velocity_mask=translational,
+        )
+        rotational_only = solve_potential_flow_maneuvering(
+            mesh, speed; rho, velocity_mask=rotational,
+        )
+        split = solve_potential_flow_maneuvering(
+            mesh, speed; rho,
+            velocity_mask=translational,
+            rotational_velocity_mask=rotational,
+        )
+        # Y_v and N_v keep the translational cut, Y_r and N_r take the
+        # rotational one, and the acceleration derivatives ignore both.
+        @test split.derivatives.Y_v == shared.derivatives.Y_v
+        @test split.derivatives.N_v == shared.derivatives.N_v
+        @test split.derivatives.Y_r == rotational_only.derivatives.Y_r
+        @test split.derivatives.N_r == rotational_only.derivatives.N_r
+        @test split.derivatives.Y_vdot == shared.derivatives.Y_vdot
+        @test split.derivatives.N_rdot == shared.derivatives.N_rdot
+        # The two cuts must actually separate the rotational coefficients.
+        @test split.derivatives.Y_r != shared.derivatives.Y_r
+    end
 end

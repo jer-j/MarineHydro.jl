@@ -103,30 +103,36 @@ vortex, hook-shaped iso-wake contours, and strong turbulence anisotropy. Those
 are validation targets for the future crossflow and wake model, not phenomena
 that the present attached strip march can claim to reproduce.
 
-For immediate integrated-load validation, the script
-`validation/gothenburg2010/kvlcc2_boundary_layer_validation.jl` compares the
-predicted linear derivatives with the model-test-derived MMG values reported
-for KVLCC2. It reports whole-hull potential flow, Schmitz potential flow, direct
-Head shear, Head displacement pressure, and the combined whole-hull result as
-separate rows. No experimental derivative is used to tune the closure.
+### Closure and integrated-drag verification
 
-Run:
+Two checks establish that the layer itself is right before any maneuvering
+derivative is asked of it. Both are in
+[`notebooks/02_kvlcc2_viscous_correction.ipynb`](../notebooks/02_kvlcc2_viscous_correction.ipynb).
 
-```sh
-julia --project=. \
-  validation/gothenburg2010/kvlcc2_boundary_layer_validation.jl
-```
+1. **Flat plate.** With constant edge speed, the march must recover
+   ``\theta = 0.036\,x\,Re_x^{-1/5}`` and ``C_f = 0.0592\,Re_x^{-1/5}``. It sits
+   a few per cent below both and closes on them as ``Re_x`` grows — ``\theta``
+   from ``7\%`` to ``3\%`` and ``C_f`` from ``9\%`` to ``3\%`` over
+   ``7\times10^5 \le Re_x \le 5\times10^6`` — with ``H`` settling at
+   ``1.36``–``1.43``.
+2. **KVLCC2 friction drag.** The strip march predicts
+   ``C_F = 0.947``–``0.950`` times the ITTC-1957 correlation line at
+   ``Re = 4.6\times10^6``, essentially unchanged across a sevenfold change in
+   panel count (112 to 836). ITTC-57 is deliberately above a true flat-plate
+   line, so a bare attached calculation with no form factor landing slightly
+   under it is the expected result.
 
-Use `--fine` to add a fourth surface resolution.
+The layer is therefore validated as an attached-flow integral method. What
+follows is a failure of the *maneuvering* extraction, not of the closure.
 
-For a coupled diagnostic at one resolution:
+### Derivative comparison
 
-```sh
-julia --project=. \
-  validation/gothenburg2010/kvlcc2_boundary_layer_validation.jl \
-  --shape=8x5 --coupling-iterations=8 \
-  --output=validation/gothenburg2010/results/kvlcc2_boundary_layer_coupled.csv
-```
+The same notebook compares the predicted linear derivatives with the
+model-test-derived MMG values for KVLCC2, reporting whole-hull potential flow,
+Schmitz potential flow, direct Head shear, Head displacement pressure, and the
+combined whole-hull result as separate rows. No experimental derivative is used
+to tune the closure. A coupled diagnostic is available by passing
+`coupling_iterations=8` to `viscous_maneuvering_correction`.
 
 ### Current result
 
@@ -136,10 +142,16 @@ Wang-normalized derivatives are:
 
 | Coefficient | Head-corrected, 480 panels | KVLCC2 MMG reference |
 |---|---:|---:|
-| $Y_v'$ | $-0.004461$ | $-0.020475$ |
-| $Y_r'$ | $-0.004760$ | $+0.005395$ |
-| $N_v'$ | $-0.015075$ | $-0.008905$ |
-| $N_r'$ | $-0.001367$ | $-0.003185$ |
+| $Y_v'$ | $-0.004037$ | $-0.020475$ |
+| $Y_r'$ | $-0.002999$ | $+0.005395$ |
+| $N_v'$ | $-0.012663$ | $-0.008905$ |
+| $N_r'$ | $-0.001311$ | $-0.003185$ |
+
+These use the current `base_flow=:double_body` and
+`acceleration_formulation=:direct` defaults. Wang's original uniform-stream
+linearization gives $N_v'=-0.017252$ on the same mesh against $-0.014839$ for
+the double-body form, so roughly $14\,\%$ of the inviscid yaw moment was a
+modeling artefact rather than physics.
 
 The 112, 180, 264, and 480-panel sequence is not converged, and the two finest
 meshes flag 6 and 10 aft panels as separated. Eight under-relaxed coupling
@@ -164,5 +176,3 @@ coefficients.
   <https://flightstream-theory.altair.com/>.
 - Drela, "XFOIL: An Analysis and Design System,"
   <https://doi.org/10.1007/978-3-642-84010-4_1>.
-- Altair, *FlightStream Theory Manual*,
-  <https://flightstream-theory.altair.com/>.

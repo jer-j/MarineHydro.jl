@@ -130,6 +130,30 @@ yaw_potential = result.potentials.yaw
 derivatives = result.derivatives
 ```
 
+This is the recommended entry point. Its defaults differ from Wang's published
+method in two ways, both verified against exact results in
+[`notebooks/01_maneuvering_theory.ipynb`](notebooks/01_maneuvering_theory.ipynb):
+the acceleration derivatives come from the better-conditioned direct
+boundary-element formulation, and the steady pressure is linearized about the
+double-body base flow rather than the undisturbed stream, which is what makes
+the yaw moment reproduce the exact Munk moment. Pass
+`acceleration_formulation=:indirect` and `base_flow=:uniform_stream` to recover
+the published behaviour.
+
+Wang et al. prescribe a stern truncation further aft for the rotational
+derivatives than for the translational ones, and recommend Clarke's regressions
+in preference to integrating them directly:
+
+```julia
+result = solve_potential_flow_maneuvering(
+    mesh, forward_speed;
+    velocity_mask=wang_stern_mask(mesh, x_cut),
+    rotational_velocity_mask=wang_stern_mask(mesh, x_cut_aft),
+)
+
+Y_r, N_r = clarke_rotational_derivatives(Y_v_prime, beam, length, draft, C_B)
+```
+
 Wang et al.'s separate restricted-water continuity and Bernoulli correction is
 available as:
 
@@ -174,29 +198,38 @@ solve crossflow momentum or a separated stern wake. See
 [`docs/INTEGRAL_BOUNDARY_LAYER.md`](docs/INTEGRAL_BOUNDARY_LAYER.md) for the
 equations and validation limits.
 
-Public KVLCC2 and KCS workshop geometry can be fetched and validated with the
-scripts in [`validation/gothenburg2010`](validation/gothenburg2010). Historical
-Mariner and Tokyo Maru metadata from Wang et al. are recorded in
-[`validation/wang2000`](validation/wang2000). The KVLCC2 MMG normalization and
-the current automatic Schmitz-cutoff comparison are documented in
-[`validation/kvlcc2_maneuvering`](validation/kvlcc2_maneuvering).
+#### Documentation and validation
 
-The cross-hull study in
-[`validation/public_hulls`](validation/public_hulls) adds checksum-pinned DTMB
-5415 and DTC geometry plus an analytic Wigley hull. It compares KCS, KVLCC2,
-DTMB 5415, DTC, and Wigley static-drift derivatives and sway-yaw added masses
-under consistent normalization.
+The theory, the calculations and the validation evidence live in three
+executable notebooks in [`notebooks`](notebooks), which should be read in order:
+
+1. [`01_maneuvering_theory.ipynb`](notebooks/01_maneuvering_theory.ipynb) —
+   the zero-frequency double-body problem, the discretization, the derivative
+   integrals, and verification against the analytic triaxial ellipsoid,
+   including an exact ideal-flow check of the velocity derivatives.
+2. [`02_kvlcc2_viscous_correction.ipynb`](notebooks/02_kvlcc2_viscous_correction.ipynb) —
+   Gothenburg 2010 KVLCC2 geometry, surface flow, Head's integral boundary layer
+   verified against flat-plate and ITTC-1957 friction, and the viscous
+   derivative correction.
+3. [`03_public_hull_derivatives.ipynb`](notebooks/03_public_hull_derivatives.ipynb) —
+   KCS, KVLCC2, DTMB 5415, DTC and Wigley under one model.
+
+Geometry is downloaded rather than committed: run
+[`validation/gothenburg2010/fetch_geometry.sh`](validation/gothenburg2010) and
+[`validation/public_hulls/fetch_geometry.sh`](validation/public_hulls) once.
+Both write to untracked `data/` directories, and all generated figures and CSVs
+go to untracked `results/` directories. The reference values, their provenance
+and their limitations are recorded in the `README.md` and `.toml` files beside
+each case, including the KVLCC2 MMG normalization in
+[`validation/kvlcc2_maneuvering`](validation/kvlcc2_maneuvering) and the
+historical Mariner and Tokyo Maru metadata in
+[`validation/wang2000`](validation/wang2000).
 
 See [`examples/wang_open_deep_water.jl`](examples/wang_open_deep_water.jl) for
-a complete calculation and
+a minimal calculation, and
 [`docs/WANG_MANEUVERING_PLAN.md`](docs/WANG_MANEUVERING_PLAN.md) for the
-governing equations, validation gates, and deferred scope.
-
-Executable Julia/IJulia notebooks for the high-resolution KVLCC2 bow and stern
-surface-flow views, analytical ellipsoid validation, and five-hull derivative
-and added-mass comparison are in
-[`notebooks`](notebooks). They load `Revise.jl` for interactive development and
-keep generated figures separate from the automated tests.
+governing equations, validation gates, deferred scope, and the currently known
+defects of the method.
 
 6. **Differentiability** :
 For differentiability with respect to mesh dimension, use `paper/MeshGradients_singlebody.jl`

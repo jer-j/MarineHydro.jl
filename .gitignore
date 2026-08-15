@@ -1,6 +1,16 @@
 ./Manifest.toml
+
+# Downloaded or generated data and figures stay out of version control.
+# Regenerate geometry with the fetch_geometry.sh scripts and figures by
+# running the notebooks.
 validation/gothenburg2010/data/
 validation/gothenburg2010/results/
-validation/wang2000/results/
 validation/public_hulls/data/
 validation/public_hulls/results/
+validation/wang2000/results/
+
+# Literature PDFs are not redistributable.
+references/
+
+# Notebooks are committed without outputs; see notebooks/README.md.
+.ipynb_checkpoints/

@@ -1,10 +1,20 @@
-# MarineHydro validation notebooks
+# MarineHydro maneuvering notebooks
 
-These notebooks document visualization and validation workflows that are too
-expensive or presentation-oriented for the automated test suite. They use a
-native Julia kernel, activate the repository project themselves, and load
-`Revise.jl` before `MarineHydro.jl` so edits made during an interactive session
-are picked up without restarting the kernel.
+These three notebooks are the executable record of the maneuvering-derivative
+capability. They replace the earlier standalone drivers under `validation/`:
+each notebook now carries the theory, the calculation, the figures and the
+interpretation for one stage of the method, and there is no separate script to
+keep in sync.
+
+Read them in order.
+
+| Notebook | Contents |
+|---|---|
+| [`01_maneuvering_theory.ipynb`](01_maneuvering_theory.ipynb) | The zero-frequency double-body boundary-value problem, the indirect boundary-element discretization, Wang's derivative integrals and normalization, the Schmitz truncation, and verification against the analytic triaxial ellipsoid — added mass, the radiation solver's low-frequency limit, the direct-versus-indirect formulation comparison, and an exact ideal-flow check of the velocity derivatives via the Munk moment |
+| [`02_kvlcc2_viscous_correction.ipynb`](02_kvlcc2_viscous_correction.ipynb) | Gothenburg 2010 KVLCC2 geometry import and convergence, double-body surface flow with stagnation and streamlines, Head's turbulent integral boundary layer with flat-plate and ITTC-1957 friction-drag verification, and the linearized viscous correction to the velocity derivatives |
+| [`03_public_hull_derivatives.ipynb`](03_public_hull_derivatives.ipynb) | KCS, KVLCC2, DTMB 5415, DTC and Wigley under one model: four geometry importers, added masses, static-drift derivatives, and the strict-Wang yaw error as a function of slenderness |
+
+## Setup
 
 Install the notebook tools once in Julia's shared environment:
 
@@ -21,30 +31,33 @@ using IJulia
 jupyterlab(dir=pwd())
 ```
 
-Open one of the following notebooks with the registered Julia kernel:
+The notebooks activate the repository project themselves and load `Revise.jl`
+before `MarineHydro`, so source edits are picked up without restarting the
+kernel.
 
-- `kvlcc2_surface_flow.ipynb` solves the 1,984-panel KVLCC2 surge problem and
-  shows the coordinate orientation, bow stagnation region, bow and stern
-  surface streamlines without rendering a free-surface plane or elevation.
-- `wang_ellipsoid_validation.ipynb` compares Wang's zero-frequency sway added
-  mass with the analytical ellipsoid result and the low-frequency limit of
-  MarineHydro's radiation solver.
-- `public_hull_derivatives.ipynb` solves KCS, KVLCC2, DTMB 5415, DTC, and
-  Wigley, renders every waterline-clipped hull, and compares static-drift
-  derivatives and sway-yaw added masses with the available public references.
+## Geometry
 
-The KVLCC2 notebook expects the checksum-verified Gothenburg geometry:
+Notebooks 2 and 3 need public hull geometry, which is downloaded rather than
+committed:
 
 ```sh
-validation/gothenburg2010/fetch_geometry.sh
+validation/gothenburg2010/fetch_geometry.sh    # KVLCC2 and KCS (notebooks 2, 3)
+validation/public_hulls/fetch_geometry.sh      # adds DTMB 5415 and DTC (notebook 3)
 ```
 
-The multi-hull notebook fetches all five geometry sources with:
+Notebook 1 needs no downloads; its geometry is generated analytically.
+
+## Conventions
+
+**Notebooks are committed without outputs.** Every figure is written to the
+untracked `results/` directory beside the relevant `validation/` case, and every
+downloaded mesh lives in an untracked `data/` directory. Clear outputs before
+committing:
 
 ```sh
-validation/public_hulls/fetch_geometry.sh
+jupyter nbconvert --clear-output --inplace notebooks/*.ipynb
 ```
 
-Generated figures are written under the ignored validation `results/`
-directories. Numerical pass/fail criteria remain in `test/`; notebooks are
-executable scientific records rather than test fixtures.
+Numerical pass/fail criteria live in `test/`. These notebooks are scientific
+records — they report what the method does, including where it disagrees with
+reference data, and they are not test fixtures.
