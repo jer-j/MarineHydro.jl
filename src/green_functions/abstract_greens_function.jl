@@ -1,6 +1,22 @@
 abstract type GreensFunction end
 
-const _Iterable = Union{Tuple, Vector}  # Not all iterables types, but the one we might use in the short term
+const _GreensFunctionVector = AbstractVector{<:GreensFunction}
+
+function _tuple_sum(f, values::Tuple{T}) where {T}
+    return f(first(values))
+end
+
+function _tuple_sum(f, values::Tuple{T,U,Vararg{Any}}) where {T,U}
+    return f(first(values)) + _tuple_sum(f, Base.tail(values))
+end
+
+function _tuple_broadcast_sum(f, values::Tuple{T}) where {T}
+    return f(first(values))
+end
+
+function _tuple_broadcast_sum(f, values::Tuple{T,U,Vararg{Any}}) where {T,U}
+    return f(first(values)) .+ _tuple_broadcast_sum(f, Base.tail(values))
+end
 
 
 """
@@ -15,7 +31,10 @@ Calculates the Green's function between two points.
 """
 function greens end
 
-greens(gfs::_Iterable, e1, e2, w) = sum(greens(gf, e1, e2, w) for gf in gfs)
+greens(gfs::Tuple, e1, e2, w) =
+    _tuple_sum(gf -> greens(gf, e1, e2, w), gfs)
+greens(gfs::_GreensFunctionVector, e1, e2, w) =
+    sum(greens(gf, e1, e2, w) for gf in gfs)
 
 
 """
@@ -31,7 +50,27 @@ Calculates the gradient of the Rankine Green's function between two points.
 """
 function gradient_greens end
 
-gradient_greens(gfs::_Iterable, e1, e2, w; with_respect_to_first_variable=false) = sum(gradient_greens(gf, e1, e2, w; with_respect_to_first_variable) for gf in gfs)
+gradient_greens(gfs::Tuple, e1, e2, w; with_respect_to_first_variable=false) =
+    _tuple_sum(
+        gf -> gradient_greens(
+            gf,
+            e1,
+            e2,
+            w;
+            with_respect_to_first_variable,
+        ),
+        gfs,
+    )
+gradient_greens(
+    gfs::_GreensFunctionVector,
+    e1,
+    e2,
+    w;
+    with_respect_to_first_variable=false,
+) = sum(
+    gradient_greens(gf, e1, e2, w; with_respect_to_first_variable)
+    for gf in gfs
+)
 
 
 """
@@ -46,7 +85,10 @@ Calculates the integral of Green's function over a panel.
 """
 function integral end
 
-integral(gfs::_Iterable, e1, e2, w) = sum(integral(gf, e1, e2, w) for gf in gfs)
+integral(gfs::Tuple, e1, e2, w) =
+    _tuple_sum(gf -> integral(gf, e1, e2, w), gfs)
+integral(gfs::_GreensFunctionVector, e1, e2, w) =
+    sum(integral(gf, e1, e2, w) for gf in gfs)
 
 
 """
@@ -62,7 +104,27 @@ Calculates the integral of the gradient of Green's function over a panel.
 """
 function integral_gradient end
 
-integral_gradient(gfs::_Iterable, e1, e2, w; with_respect_to_first_variable=false) = sum(integral_gradient(gf, e1, e2, w; with_respect_to_first_variable) for gf in gfs)
+integral_gradient(gfs::Tuple, e1, e2, w; with_respect_to_first_variable=false) =
+    _tuple_sum(
+        gf -> integral_gradient(
+            gf,
+            e1,
+            e2,
+            w;
+            with_respect_to_first_variable,
+        ),
+        gfs,
+    )
+integral_gradient(
+    gfs::_GreensFunctionVector,
+    e1,
+    e2,
+    w;
+    with_respect_to_first_variable=false,
+) = sum(
+    integral_gradient(gf, e1, e2, w; with_respect_to_first_variable)
+    for gf in gfs
+)
 
 
 """
@@ -80,7 +142,38 @@ function both_integral_and_integral_gradient(gf, element_1, element_2, wavenumbe
             integral_gradient(gf, element_1, element_2, wavenumber; with_respect_to_first_variable=with_respect_to_first_variable))
 end
 
-both_integral_and_integral_gradient(gfs::_Iterable, e1, e2, w; with_respect_to_first_variable=false) = reduce(.+, both_integral_and_integral_gradient(gf, e1, e2, w; with_respect_to_first_variable) for gf in gfs)
+both_integral_and_integral_gradient(
+    gfs::Tuple,
+    e1,
+    e2,
+    w;
+    with_respect_to_first_variable=false,
+) = _tuple_broadcast_sum(
+    gf -> both_integral_and_integral_gradient(
+        gf,
+        e1,
+        e2,
+        w;
+        with_respect_to_first_variable,
+    ),
+    gfs,
+)
+both_integral_and_integral_gradient(
+    gfs::_GreensFunctionVector,
+    e1,
+    e2,
+    w;
+    with_respect_to_first_variable=false,
+) = reduce(
+    .+,
+    both_integral_and_integral_gradient(
+        gf,
+        e1,
+        e2,
+        w;
+        with_respect_to_first_variable,
+    ) for gf in gfs
+)
 
 
 # Below some common tools used for several wave terms

@@ -97,6 +97,76 @@ F = DiffractionForce(mesh,ω,ζ)
 A,B = calculate_radiation_forces(mesh,ζ,ω)
 ```
 
+### Low-frequency maneuvering derivatives
+
+The unrestricted, infinite-depth Wang et al. method is available through
+`solve_wang_maneuvering`. It solves a zero-frequency unit-sway problem with the
+reflected-Rankine Green function and evaluates the linear sway-yaw acceleration
+and velocity derivatives from the surface potential and its longitudinal
+gradient.
+
+```julia
+result = solve_wang_maneuvering(mesh, forward_speed; rho=1025.0)
+derivatives = result.derivatives
+
+velocity_mask = wang_stern_mask(mesh, x_cut)
+truncated_derivatives = wang_hydrodynamic_derivatives(
+    mesh,
+    result.potential,
+    result.potential_gradient[:, 1],
+    forward_speed;
+    rho=1025.0,
+    velocity_mask,
+)
+```
+
+For an independent three-dimensional yaw solution, rather than Wang's
+`x * sway_potential` approximation, use:
+
+```julia
+result = solve_potential_flow_maneuvering(mesh, forward_speed; rho=1025.0)
+sway_potential = result.potentials.sway
+yaw_potential = result.potentials.yaw
+derivatives = result.derivatives
+```
+
+An experimental quasi-3D Head integral boundary-layer correction can be
+applied to the whole-hull result. The default is one-way; positive
+`coupling_iterations` enable an under-relaxed displacement-transpiration
+interaction with the BEM:
+
+```julia
+grid = read_gothenburg2010_panel_grid(surface_paths; target_shape=(12, 7))
+inviscid = solve_potential_flow_maneuvering(grid.mesh, forward_speed)
+surge = solve_rigid_body_potential(grid.mesh, :surge)
+viscous = viscous_maneuvering_correction(
+    grid,
+    surge,
+    inviscid,
+    forward_speed,
+    kinematic_viscosity;
+    coupling_iterations=0,
+)
+corrected = apply_viscous_correction(inviscid.derivatives, viscous)
+```
+
+The present boundary-layer state is marched on 3D hull strips but does not yet
+solve crossflow momentum or a separated stern wake. See
+[`docs/INTEGRAL_BOUNDARY_LAYER.md`](docs/INTEGRAL_BOUNDARY_LAYER.md) for the
+equations and validation limits.
+
+Public KVLCC2 and KCS workshop geometry can be fetched and validated with the
+scripts in [`validation/gothenburg2010`](validation/gothenburg2010). Historical
+Mariner and Tokyo Maru metadata from Wang et al. are recorded in
+[`validation/wang2000`](validation/wang2000). The KVLCC2 MMG normalization and
+the current automatic Schmitz-cutoff comparison are documented in
+[`validation/kvlcc2_maneuvering`](validation/kvlcc2_maneuvering).
+
+See [`examples/wang_open_deep_water.jl`](examples/wang_open_deep_water.jl) for
+a complete calculation and
+[`docs/WANG_MANEUVERING_PLAN.md`](docs/WANG_MANEUVERING_PLAN.md) for the
+governing equations, validation gates, and deferred scope.
+
 6. **Differentiability** :
 For differentiability with respect to mesh dimension, use `paper/MeshGradients_singlebody.jl`
 Differentiability needs an AD engine: use Zygote

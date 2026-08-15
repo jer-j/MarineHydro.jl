@@ -1,0 +1,25 @@
+[mariner]
+length_m = 2.5
+beam_m = 0.36
+draft_m = 0.116
+displacement_m3 = 0.06144
+block_coefficient = 0.589
+trim_by_stern_percent_length = 0.38
+model_scale = 64.37
+froude_number = 0.0905
+published_half_hull_panels = 147
+velocity_integral_end_station_sway = 4
+velocity_integral_end_station_yaw = 2
+
+[tokyo_maru]
+length_m = 2.0
+beam_m = 0.33
+draft_m = 0.11
+displacement_m3 = 0.05844
+block_coefficient = 0.805
+trim_by_stern_percent_length = 0.0
+model_scale = 145.0
+froude_number = 0.0675
+published_half_hull_panels = 170
+velocity_integral_end_station_sway = 4
+velocity_integral_end_station_yaw = 2

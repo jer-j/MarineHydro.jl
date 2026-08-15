@@ -1,0 +1,47 @@
+[source]
+title = "Numerical Ship Hydrodynamics: An Assessment of the Gothenburg 2010 Workshop"
+editors = "Lars Larsson, Frederick Stern, and Michel Visonneau"
+year = 2014
+doi = "10.1007/978-94-007-7189-5"
+chapter = 3
+chapter_title = "Evaluation of Local Flow Predictions"
+
+[case]
+identifier = "1.1a"
+hull = "original KVLCC2"
+configuration = "double-body hull without rudder or propeller"
+reynolds_number = 4.6e6
+froude_number = 0.142
+wind_tunnel_facility = "POSTECH"
+towing_tank_facility = "KRISO"
+wind_tunnel_blockage_fraction_lower_bound = 0.06
+towing_tank_blockage_fraction = 0.003
+
+[measurements]
+cross_section_x_over_Lpp = [0.85, 0.9825, 1.1]
+propeller_plane_x_over_Lpp = 0.9825
+total_wake_r_over_R = [0.4, 0.6, 0.8, 1.0]
+velocity_components = ["u/U", "v/U", "w/U"]
+reynolds_stress_components = ["uu/U^2", "vv/U^2", "ww/U^2", "uv/U^2", "uw/U^2"]
+chapter_text_profile_z_over_Lpp = -0.05075
+figure_3_10_caption_profile_z_over_Lpp = -0.0575
+profile_coordinate_discrepancy_note = "The chapter text and Figure 3.10 caption report different z/Lpp values; retain both until the original POSTECH data resolve the discrepancy."
+
+[measurements.propeller_plane_maxima]
+uu_over_U2 = 0.016
+vv_over_U2 = 0.007
+ww_over_U2 = 0.008
+turbulent_kinetic_energy_over_U2 = 0.016
+
+[model_scope]
+usable_now = [
+    "Reynolds number and double-body condition",
+    "cross-section locations for future profile output",
+]
+requires_crossflow_wake_model = [
+    "hook-shaped axial-wake contours",
+    "bilge-vortex location and strength",
+    "propeller-plane Reynolds stresses",
+    "downstream wake at x/Lpp=1.1",
+]
+

@@ -1,0 +1,95 @@
+[paper]
+authors = "In-Tae Kim, Cheolho Kim, Sang-Hyun Kim, Donghyeong Ko, Seong-Ho Moon, Hwanghi Park, Jaewoong Kwon, and Bongyong Jin"
+title = "Estimation of the manoeuvrability of the KVLCC2 in calm water using free running simulation based on CFD"
+journal = "International Journal of Naval Architecture and Ocean Engineering"
+volume = 13
+year = 2021
+pages = "466-477"
+doi = "10.1016/j.ijnaoe.2021.05.004"
+table_4_page = 469
+table_7_page = 475
+table_8_page = 476
+
+[ship]
+length_pp_m = 320.0
+beam_m = 58.0
+draft_m = 20.8
+displacement_m3 = 312600.0
+block_coefficient = 0.81
+froude_number = 0.142
+model_scale = 45.7
+model_length_pp_m = 7.0
+
+[coordinates]
+x = "forward"
+y = "starboard"
+z = "down"
+origin = "midship"
+
+[mmg.linear_hull]
+source = "Table 4; described by the paper as derived from model tests published by Yasukawa and Yoshimura (2015)"
+force_scale = "0.5*rho*Lpp*T*U^2"
+moment_scale = "0.5*rho*Lpp^2*T*U^2"
+v_prime = "v/U"
+r_prime = "r*Lpp/U"
+Y_v = -0.315
+Y_r = 0.083
+N_v = -0.137
+N_r = -0.049
+
+[[efd.zigzag]]
+case = "minus_10_minus_10"
+imo_first_overshoot_limit_deg = 20.0
+imo_second_overshoot_limit_deg = 40.0
+efd_first_overshoot_deg = 9.5
+efd_second_overshoot_deg = 15.0
+virtual_disk_first_overshoot_deg = 10.7
+virtual_disk_second_overshoot_deg = 13.0
+rbm10_first_overshoot_deg = 9.3
+rbm10_second_overshoot_deg = 17.2
+system_based_first_overshoot_deg = 7.2
+system_based_second_overshoot_deg = 9.1
+
+[[efd.zigzag]]
+case = "plus_10_plus_10"
+imo_first_overshoot_limit_deg = 20.0
+imo_second_overshoot_limit_deg = 40.0
+efd_first_overshoot_deg = 8.2
+efd_second_overshoot_deg = 21.9
+virtual_disk_first_overshoot_deg = 8.7
+virtual_disk_second_overshoot_deg = 21.8
+rbm10_first_overshoot_deg = 9.0
+rbm10_second_overshoot_deg = 18.9
+system_based_first_overshoot_deg = 5.0
+system_based_second_overshoot_deg = 14.0
+
+[[efd.zigzag]]
+case = "minus_20_minus_20"
+imo_first_overshoot_limit_deg = 25.0
+efd_first_overshoot_deg = 15.1
+virtual_disk_first_overshoot_deg = 16.4
+rbm10_first_overshoot_deg = 15.5
+rbm5_first_overshoot_deg = 14.8
+system_based_first_overshoot_deg = 13.9
+
+[[efd.zigzag]]
+case = "plus_20_plus_20"
+imo_first_overshoot_limit_deg = 25.0
+efd_first_overshoot_deg = 13.7
+virtual_disk_first_overshoot_deg = 14.2
+rbm10_first_overshoot_deg = 15.4
+rbm5_first_overshoot_deg = 15.0
+rbm2_first_overshoot_deg = 14.7
+system_based_first_overshoot_deg = 10.4
+
+[efd.turning.minus_35]
+imo_advance_limit_Lpp = 4.5
+imo_tactical_diameter_limit_Lpp = 5.0
+efd_advance_Lpp = 3.11
+efd_tactical_diameter_Lpp = 3.08
+virtual_disk_advance_Lpp = 2.98
+virtual_disk_tactical_diameter_Lpp = 2.99
+rbm10_advance_Lpp = 3.09
+rbm10_tactical_diameter_Lpp = 3.08
+system_based_advance_Lpp = 3.06
+system_based_tactical_diameter_Lpp = 3.05

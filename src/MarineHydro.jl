@@ -29,6 +29,13 @@ export ExactGuevelDelhommeau
 include("meshes.jl")
 export Mesh, element, combine_meshes, +, wavebot_mesh
 
+include("benchmark_meshes.jl")
+export StructuredPanelGrid
+export read_tecplot_structured_surfaces, read_gothenburg2010_mesh
+export read_gothenburg2010_panel_grid
+export structured_sectional_area_curve, gothenburg_maximum_section
+export mesh_surface_area, mesh_signed_volume
+
 include("bodies.jl")
 export FloatingBody, combine_floatingbodies, +
 
@@ -48,5 +55,31 @@ export calculate_radiation_forces, DiffractionForce, diffraction_force
 
 include("solve.jl")
 export solve_problem, solve_all_problems
+
+include("maneuvering.jl")
+export WangHydrodynamicDerivatives, WangManeuveringResult
+export MMGLinearHullDerivatives, mmg_to_wang_velocity_derivatives
+export PotentialFlowManeuveringResult
+export RigidBodyPotentialResult, solve_rigid_body_potential
+export maneuvering_boundary_condition, wang_sway_boundary_condition
+export evaluate_indirect_potential_gradient
+export wang_hydrodynamic_derivatives, nondimensionalize_wang_derivatives
+export nondimensionalize_maneuvering_derivatives
+export potential_flow_hydrodynamic_derivatives
+export solve_wang_maneuvering, solve_potential_flow_maneuvering, wang_stern_mask
+
+include("boundary_layers.jl")
+export HeadTurbulentClosure, IntegralBoundaryLayerResult
+export Quasi3DBoundaryLayerResult, ViscousManeuveringDerivatives
+export ViscousManeuveringCorrectionResult
+export head_kinetic_shape_factor, head_skin_friction_coefficient
+export head_entrainment_coefficient, solve_head_boundary_layer
+export body_relative_edge_velocity, solve_quasi3d_boundary_layer
+export viscous_maneuvering_correction, apply_viscous_correction
+export nondimensionalize_viscous_derivatives
+
+include("surface_streamlines.jl")
+export SurfaceStreamline, surface_stagnation_panel
+export trace_surface_streamline, trace_surface_streamlines
 
 end

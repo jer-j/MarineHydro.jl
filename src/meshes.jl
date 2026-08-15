@@ -9,30 +9,58 @@ using LinearAlgebra: cross, dot, norm
 ############
 import Base: +
 
-struct Mesh
-    vertices::AbstractMatrix
-    faces::AbstractMatrix
-    centers::AbstractMatrix
-    normals::AbstractMatrix
-    areas::AbstractVector
-    radii::AbstractVector
-    nvertices::Number
-    nfaces::Number
-    function Mesh(vertices::AbstractMatrix, faces::AbstractMatrix,
-                  centers::AbstractMatrix, normals::AbstractMatrix, areas::AbstractVector,
-                  radii::AbstractVector,nvertices::Number,
-                  nfaces::Number
-                  )
+struct Mesh{
+    V<:AbstractMatrix,
+    F<:AbstractMatrix,
+    C<:AbstractMatrix,
+    N<:AbstractMatrix,
+    A<:AbstractVector,
+    R<:AbstractVector,
+}
+    vertices::V
+    faces::F
+    centers::C
+    normals::N
+    areas::A
+    radii::R
+    nvertices::Int
+    nfaces::Int
+    function Mesh(
+        vertices::V,
+        faces::F,
+        centers::C,
+        normals::N,
+        areas::A,
+        radii::R,
+        nvertices::Number,
+        nfaces::Number,
+    ) where {
+        V<:AbstractMatrix,
+        F<:AbstractMatrix,
+        C<:AbstractMatrix,
+        N<:AbstractMatrix,
+        A<:AbstractVector,
+        R<:AbstractVector,
+    }
         # TODO: centers, areas, and radii(?) could be calculated from list of vertices and faces
-        nvertices = size(vertices)[1]
+        nvertices = size(vertices, 1)
         @assert (size(vertices) == (nvertices, 3)) "each vertex needs 3 coordinates"
-        nfaces = size(faces)[1]
+        nfaces = size(faces, 1)
         @assert (size(faces) == (nfaces, 4)) "only quadrilateral panels are allowed"
         @assert (size(centers) == (nfaces, 3)) "centers must be [nfaces x 3]"
-        @assert (size(centers) == (nfaces, 3)) "centers must be [nfaces x 3]"
+        @assert (size(normals) == (nfaces, 3)) "normals must be [nfaces x 3]"
         @assert (length(areas) == nfaces) "areas vector must have length nfaces"
         @assert (length(radii) == nfaces) "radii vector must have length nfaces"
-        return new(vertices, faces, centers, normals, areas, radii, nvertices, nfaces)
+        return new{V,F,C,N,A,R}(
+            vertices,
+            faces,
+            centers,
+            normals,
+            areas,
+            radii,
+            nvertices,
+            nfaces,
+        )
     end
 end
 
@@ -50,7 +78,7 @@ end
 
 
 #  Combining multiple Mesh structs into one Mesh struct  
-function combine_meshes(meshlist::Vector{Mesh})
+function combine_meshes(meshlist::AbstractVector{<:Mesh})
 
     # Make lists
     vetrices_list = [mesh.vertices for mesh in meshlist]
@@ -102,7 +130,7 @@ function +(mesh1::Mesh, mesh2::Mesh)
     return combine_meshes([mesh1, mesh2])
 end
 
-function +(mesh1::Mesh, mesh_vec::Vector{Mesh})
+function +(mesh1::Mesh, mesh_vec::AbstractVector{<:Mesh})
     return combine_meshes(vcat(mesh1, mesh_vec))
 end
 
@@ -163,9 +191,9 @@ faces(nt::NamedTuple) = nt[:faces]
 
 
 # When using a Mesh, the element is stored as a reference to the Mesh and a index
-struct LazyElement
-    mesh::Mesh
-    index::Integer
+struct LazyElement{M<:Mesh}
+    mesh::M
+    index::Int
 end
 
 function element(mesh::Mesh, J::Int)

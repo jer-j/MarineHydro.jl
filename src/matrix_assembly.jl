@@ -5,13 +5,24 @@ function assemble_matrices_comprehension(green_functions, mesh, wavenumber; dire
     
     free_surface = 0.0
 
-    if eltype(mesh.vertices)<: ForwardDiff.Dual
-        T = eltype(mesh.vertices)
+    # Preserve dual coordinates when differentiating with respect to the mesh;
+    # otherwise follow the wavenumber scalar type. Capturing a representative
+    # value, rather than an abstract `Type`, keeps the comprehension inferred.
+    complex_zero = if eltype(mesh.vertices) <: ForwardDiff.Dual
+        complex(zero(mesh.vertices[1, 1]))
     else
-        T = eltype(wavenumber)
+        complex(zero(wavenumber))
     end
 
-    S = @inbounds [-1/2τ̅ * Complex{T}(integral(green_functions, element(mesh, i), element(mesh, j), wavenumber)) for i in 1:mesh.nfaces, j in 1:mesh.nfaces]
+    S = @inbounds [oftype(
+        complex_zero,
+        -1 / 2τ̅ * integral(
+            green_functions,
+            element(mesh, i),
+            element(mesh, j),
+            wavenumber,
+        ),
+    ) for i in 1:mesh.nfaces, j in 1:mesh.nfaces]
 
     D = @inbounds [begin
             element_i = element(mesh, i)
@@ -21,12 +32,23 @@ function assemble_matrices_comprehension(green_functions, mesh, wavenumber; dire
         
             n = isnothing(all_normals) ? norm_vec : all_normals                      
 
-            c = i == j ? Complex{T}(1.0, 0.0) : Complex{T}(0.0, 0.0) # if diagonal
+            c = i == j ? one(complex_zero) : zero(complex_zero) # if diagonal
 
             constant = abs(mesh.centers[i,3]-free_surface) < 1e-8 ? c : c/2 # if panel on surface
 
             # (n' * norm_vec)=1 when n==panel normal vector. When all_normals is provided (for forward speed problems), this is not always the case.
-            (constant * (n' * norm_vec)) - 1/2τ̅ * Complex{T}(n' * integral_gradient(green_functions, element_i, element_j, wavenumber; with_respect_to_first_variable=!direct))
+            oftype(
+                complex_zero,
+                (constant * (n' * norm_vec)) - 1 / 2τ̅ * (
+                    n' * integral_gradient(
+                        green_functions,
+                        element_i,
+                        element_j,
+                        wavenumber;
+                        with_respect_to_first_variable=!direct,
+                    )
+                ),
+            )
         end for i in 1:mesh.nfaces, j in 1:mesh.nfaces]
 
     return S, D
@@ -120,4 +142,3 @@ function solve(D, S, bc; direct::Bool=true)
     end
     return ϕ, sources
 end
-

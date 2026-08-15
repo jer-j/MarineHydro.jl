@@ -1,6 +1,10 @@
 using Test
 
 @testset "MarineHydro.jl test suite" begin
+    include("./benchmark_meshes.jl")
+    include("./maneuvering.jl")
+    include("./boundary_layers.jl")
+    include("./maneuvering_validation.jl")
     include("./consistency_with_Capytaine.jl")
     include("./greens_function.jl")
     include("./greens_function_differentiation.jl")
