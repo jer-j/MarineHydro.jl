@@ -13,6 +13,7 @@ Read them in order.
 | [`01_maneuvering_theory.ipynb`](01_maneuvering_theory.ipynb) | The zero-frequency double-body boundary-value problem, the indirect boundary-element discretization, Wang's derivative integrals and normalization, the Schmitz truncation, and verification against the analytic triaxial ellipsoid — added mass, the radiation solver's low-frequency limit, the direct-versus-indirect formulation comparison, and an exact ideal-flow check of the velocity derivatives via the Munk moment |
 | [`02_kvlcc2_viscous_correction.ipynb`](02_kvlcc2_viscous_correction.ipynb) | Gothenburg 2010 KVLCC2 geometry import and convergence, double-body surface flow with stagnation and streamlines, Head's turbulent integral boundary layer with flat-plate and ITTC-1957 friction-drag verification, and the linearized viscous correction to the velocity derivatives |
 | [`03_public_hull_derivatives.ipynb`](03_public_hull_derivatives.ipynb) | KCS, KVLCC2, DTMB 5415, DTC and Wigley under one model: four geometry importers, added masses, static-drift derivatives, and the strict-Wang yaw error as a function of slenderness |
+| [`04_three_dimensional_boundary_layer.ipynb`](04_three_dimensional_boundary_layer.ipynb) | The crossflow-capable integral boundary layer: momentum-loss tensor and closure, verification in the two-dimensional limit, local flow field and 3D streamlines on KVLCC2, why a strip march fails on hull geometry, and the Schmitz cut compared with a separation-derived cut |
 
 ## Setup
 
@@ -46,6 +47,7 @@ validation/public_hulls/fetch_geometry.sh      # adds DTMB 5415 and DTC (noteboo
 ```
 
 Notebook 1 needs no downloads; its geometry is generated analytically.
+Notebook 4 needs the Gothenburg geometry.
 
 ## Conventions
 

@@ -11,10 +11,10 @@ hull surface, and returns both wall shear and displacement transpiration.
 For each strip, the attached turbulent layer satisfies
 
 ```math
-\frac{d\theta}{ds}+(H+2)\frac{\theta}{U_e}\frac{dU_e}{ds}
-=\frac{C_f}{2},
+\f\frac{d\theta}{ds}+(H+2)\f\frac{\theta}{U_e}\f\frac{dU_e}{ds}
+=\f\frac{C_f}{2},
 \qquad
-\frac{d}{ds}(U_e\theta H_1)=U_eE.
+\f\frac{d}{ds}(U_e\theta H_1)=U_eE.
 ```
 
 The edge velocity combines the unit surge, sway, and yaw BEM potentials with
@@ -35,7 +35,7 @@ With the body normal directed into the fluid and ``s`` increasing from bow to
 stern, MarineHydro uses
 
 ```math
-v_n^{BL}=\frac{1}{w}\frac{d}{ds}(wU_e\delta^*).
+v_n^{BL}=\f\frac{1}{w}\f\frac{d}{ds}(wU_e\delta^*).
 ```
 
 Published formulations may show the opposite sign when either the body-normal
@@ -58,17 +58,17 @@ formulation that the quasi-3D model lacks. It solves the full momentum-loss
 tensor with two momentum equations and a kinetic energy equation,
 
 ```math
-rac{\partial	heta_{xx}}{\partial x}+rac{\partial	heta_{xy}}{\partial y}+g_x=0,
+\frac{\partial\theta_{xx}}{\partial x}+\frac{\partial\theta_{xy}}{\partial y}+g_x=0,
 \quad
-rac{\partial	heta_{yx}}{\partial x}+rac{\partial	heta_{yy}}{\partial y}+g_y=0,
+\frac{\partial\theta_{yx}}{\partial x}+\frac{\partial\theta_{yy}}{\partial y}+g_y=0,
 \quad
-rac{\partial	heta^*_x}{\partial x}+rac{\partial	heta^*_y}{\partial y}+g_e=0,
+\frac{\partial\theta^*_x}{\partial x}+\frac{\partial\theta^*_y}{\partial y}+g_e=0,
 ```
 
 in a local Cartesian surface basis, with Drela's shear-stress lag advanced
 alongside. The tensor structure and the crossflow parameter
-``A_c=e^{1-H_k}eta_w`` are Mughal's, as used by Lokatt and Eller; the scalar
-closures for ``H^*``, ``c_f``, ``U_s``, ``C_{	au,eq}`` and ``C_D`` are Drela's
+``A_c=e^{1-H_k}\beta_w`` are Mughal's, as used by Lokatt and Eller; the scalar
+closures for ``H^*``, ``c_f``, ``U_s``, ``C_{\tau,eq}`` and ``C_D`` are Drela's
 incompressible turbulent set. Compressibility, transition and the lateral
 curvature equation of Drela's four-equation formulation are out of scope.
 
@@ -78,7 +78,7 @@ because they are not transcription:
 - The shear-lag source term as printed in Lokatt and Eller's conservation form
   carries a sign that drives the shear stress *away* from equilibrium. The
   physically correct relaxation is used instead, and because it is linear in
-  ``\sqrt{C_	au}`` it is integrated exactly rather than by explicit Euler.
+  ``\sqrt{C_\tau}`` it is integrated exactly rather than by explicit Euler.
   That matters: on a hull ``\Delta s/\delta\sim40``, and an explicit update
   oscillates violently enough to destroy the solution.
 - Two closure relations in that appendix could not be reconciled with the
@@ -89,7 +89,7 @@ because they are not transcription:
 
 On a structured flat plate with a uniform edge velocity the march reproduces
 the turbulent flat-plate laws: momentum thickness within 2% and skin friction
-within 0.1% of ``	heta=0.036\,x\,Re_x^{-1/5}`` and
+within 0.1% of ``\theta=0.036\,x\,Re_x^{-1/5}`` and
 ``c_f=0.0592\,Re_x^{-1/5}`` at the downstream end, with the crossflow angle and
 every crossflow thickness identically zero. That is the essential check that the
 tensor closure and the three equations collapse correctly onto the
