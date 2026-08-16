@@ -28,6 +28,9 @@ struct SurfaceBoundaryLayerCache{TP, TM, T, C}
         (:speed_x, :speed_y, :u_x, :u_y, :v_x, :v_y), NTuple{6, T}}}
     edge_donor::Vector{Int}
     edge_influx::Vector{T}
+    active::Vector{Bool}
+    diffusion::T
+    reference_speed::T
     viscosity::T
     closure::C
 end
@@ -73,7 +76,8 @@ strip march cannot provide.
 function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
         kinematic_viscosity::Real; closure = ThreeDimensionalClosure(),
         topology = nothing, metrics = nothing, minimum_edge_speed = nothing,
-        weld_tolerance = nothing, gradient_bound::Real = 1.0)
+        weld_tolerance = nothing, gradient_bound::Real = 1.0, active = nothing,
+        diffusion::Real = 0.0)
     size(edge_velocity) == (mesh.nfaces, 3) || throw(DimensionMismatch(
         "edge_velocity must have size (mesh.nfaces, 3)"))
     kinematic_viscosity > 0 ||
@@ -106,12 +110,23 @@ function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
         sine[panel] = across / magnitude
     end
 
+    solved = if isnothing(active)
+        fill(true, mesh.nfaces)
+    else
+        length(active) == mesh.nfaces || throw(DimensionMismatch(
+            "active must have one entry per panel"))
+        any(active) || throw(ArgumentError("at least one panel must be active"))
+        collect(Bool, active)
+    end
+
     gradients = _least_squares_gradients(mesh, surface, geometry, speed, cosine, sine,
-        element_type, gradient_bound)
-    donor, influx = _upwind_donors(mesh, surface, geometry, speed, cosine, sine)
+        element_type, gradient_bound, solved)
+    donor, influx = _upwind_donors(mesh, surface, geometry, speed, cosine, sine, solved)
 
     return SurfaceBoundaryLayerCache(surface, geometry, speed, cosine, sine,
-        gradients, donor, influx, convert(element_type, kinematic_viscosity), closure)
+        gradients, donor, influx, solved, convert(element_type, diffusion),
+        convert(element_type, largest), convert(element_type, kinematic_viscosity),
+        closure)
 end
 
 # Weighted linear least squares for the in-surface gradient of the edge velocity
@@ -119,7 +134,7 @@ end
 # stencil could be cached; it is rebuilt here because the metrics carry
 # derivatives and the cost is negligible next to the Newton solve.
 function _least_squares_gradients(mesh, topology, metrics, speed, cosine, sine,
-        element_type, bound)
+        element_type, bound, active)
     gradient_type = NamedTuple{
         (:speed_x, :speed_y, :u_x, :u_y, :v_x, :v_y), NTuple{6, element_type}}
     gradients = Vector{gradient_type}(undef, mesh.nfaces)
@@ -135,6 +150,10 @@ function _least_squares_gradients(mesh, topology, metrics, speed, cosine, sine,
             edge == 0 && continue
             topology.edge_kind[edge] === :interior || continue
             other = edge_partner(topology, edge, panel)
+            # A neighbour outside the solved region is outside the domain, so it
+            # must not enter the stencil any more than the surface's own edge
+            # would.
+            active[other] || continue
             offset3 = @view(mesh.centers[other, :]) .- @view(mesh.centers[panel, :])
             offset = @SVector [dot(offset3, @view(metrics.tangent[panel, :])),
                 dot(offset3, @view(metrics.binormal[panel, :]))]
@@ -212,26 +231,34 @@ function _gradient_rescaling(speed_gradient, u_gradient, v_gradient, size, speed
     return scaled > bound ? bound / scaled : one(scaled)
 end
 
-function _upwind_donors(mesh, topology, metrics, speed, cosine, sine)
+function _upwind_donors(mesh, topology, metrics, speed, cosine, sine, active)
     donor = zeros(Int, topology.nedges)
     influx = zeros(eltype(speed), topology.nedges)
     for edge in 1:topology.nedges
         left = topology.edge_cells[edge, 1]
         right = topology.edge_cells[edge, 2]
-        normal = (metrics.edge_area_vector[edge, 1, 1],
-            metrics.edge_area_vector[edge, 1, 2])
-        if right == 0
+        # A cell outside the solved region acts exactly like the outside of the
+        # surface: the edge between it and a solved cell becomes a boundary of
+        # the domain, through which the defect can leave. That is what gives the
+        # convergence region at the stern somewhere to discharge into.
+        left_solved = left != 0 && active[left]
+        right_solved = right != 0 && active[right]
+        (left_solved || right_solved) || continue
+        owner = right_solved && !left_solved ? right : left
+        if !(left_solved && right_solved)
             # On a boundary edge, outflow extrapolates from the owning cell and
             # inflow is marked with a zero donor so that a prescribed state is
             # supplied instead. Without that the flux divergence of a leading
             # cell would cancel by the geometric conservation law and the
             # momentum equation would have no solution.
-            velocity = (speed[left] * cosine[left], speed[left] * sine[left])
-            outward = velocity[1] * normal[1] + velocity[2] * normal[2]
-            donor[edge] = outward >= 0 ? left : 0
+            outward = _outward_speed(metrics, edge, owner, topology, speed, cosine,
+                sine)
+            donor[edge] = outward >= 0 ? owner : 0
             influx[edge] = abs(outward)
             continue
         end
+        normal = (metrics.edge_area_vector[edge, 1, 1],
+            metrics.edge_area_vector[edge, 1, 2])
         left_velocity = (speed[left] * cosine[left], speed[left] * sine[left])
         rotation = rotation_into(topology, metrics, edge, left)
         right_velocity = rotation *
@@ -251,6 +278,13 @@ function _upwind_donors(mesh, topology, metrics, speed, cosine, sine)
         influx[edge] = abs(outward)
     end
     return donor, influx
+end
+
+# Edge velocity of `owner` resolved on the outward edge normal it sees.
+function _outward_speed(metrics, edge, owner, topology, speed, cosine, sine)
+    area_vector = edge_area_vector_for(topology, metrics, edge, owner)
+    return speed[owner] * (cosine[owner] * area_vector[1] +
+            sine[owner] * area_vector[2])
 end
 
 raw"""
@@ -302,7 +336,7 @@ with `donor_states` giving the primary state of each side's upwind donor in the
 order of `cell_edges`.
 """
 function cell_residual(own_state, donor_states, panel::Integer, mesh::Mesh,
-        cache::SurfaceBoundaryLayerCache, shear)
+        cache::SurfaceBoundaryLayerCache, shear, neighbour_states = nothing)
     flux_sum = zero(SVector{3, eltype(own_state)})
     for side in 1:4
         edge = cache.topology.cell_edges[panel, side]
@@ -311,11 +345,79 @@ function cell_residual(own_state, donor_states, panel::Integer, mesh::Mesh,
                    edge_flux_contribution(donor_states[side], edge, panel, cache,
             shear)
     end
+    if !isnothing(neighbour_states)
+        flux_sum = flux_sum + _diffusive_flux(own_state, neighbour_states, panel,
+            mesh, cache, shear)
+    end
     state = panel_fluxes(own_state, cache.speed[panel], cache.cosine[panel],
         cache.sine[panel], shear[panel], cache.viscosity, cache.closure)
     sources = station_sources(state, (speed = cache.speed[panel],), cache.gradients[panel])
     return flux_sum ./ mesh.areas[panel] .+ sources
 end
+
+raw"""
+    _diffusive_flux(own_state, neighbour_states, panel, mesh, cache, shear)
+
+Drela's added conservative numerical diffusion, as an edge flux.
+
+```math
+\nabla\cdot\left[V_\epsilon\,\bar{\bar h}\,\nabla M\right],
+\qquad V_\epsilon=\epsilon\max_j q_j
+```
+
+Applied to the same defect fluxes the convective term carries, contracted on
+the same edge area vector, so it is antisymmetric between the two cells sharing
+an edge and therefore conservative: it may smear a gradient but cannot change
+the total momentum or energy defect leaving the domain.
+
+This is the term that lets a *convergence line* be represented. Where the
+external streamlines converge, the characteristics of the hyperbolic system
+converge too, and Drela notes such lines are captured "with no special treatment
+being required", analogous to a captured shock. Pure upwinding cannot do this:
+at a cell where every edge is an inflow there is no downstream direction to
+smear into, its equation has no solution, and the solve stalls on it. The
+diffusion term renders the system weakly elliptic, which gives information a way
+across the line.
+
+The cost is the block-lower-triangular structure, which this term destroys — it
+couples each cell to its neighbours in both directions. That is the honest trade
+between a purely hyperbolic scheme that cannot represent separation and a weakly
+elliptic one that can.
+"""
+function _diffusive_flux(own_state, neighbour_states, panel::Integer, mesh::Mesh,
+        cache::SurfaceBoundaryLayerCache, shear)
+    total = zero(SVector{3, eltype(own_state)})
+    cache.diffusion > 0 || return total
+    own = panel_fluxes(own_state, cache.speed[panel], cache.cosine[panel],
+        cache.sine[panel], shear[panel], cache.viscosity, cache.closure)
+    strength = cache.diffusion * cache.reference_speed
+    for side in 1:4
+        edge = cache.topology.cell_edges[panel, side]
+        edge == 0 && continue
+        cache.topology.edge_kind[edge] === :interior || continue
+        other = edge_partner(topology_of(cache), edge, panel)
+        (other == 0 || !cache.active[other]) && continue
+        neighbour = panel_fluxes(neighbour_states[side], cache.speed[other],
+            cache.cosine[other], cache.sine[other], shear[other], cache.viscosity,
+            cache.closure)
+        rotation = rotation_into(cache.topology, cache.metrics, edge, panel)
+        momentum = rotation * neighbour.momentum * transpose(rotation) - own.momentum
+        energy = rotation * neighbour.energy - own.energy
+        area_vector = edge_area_vector_for(cache.topology, cache.metrics, edge, panel)
+        normal = @SVector [area_vector[1], area_vector[2]]
+        separation = max(norm(@view(mesh.centers[other, :]) .-
+                              @view(mesh.centers[panel, :])), eps(Float64))
+        # The grid length matrix reduces here to the cell size along the edge
+        # normal, which for a quadrilateral is the centroid separation.
+        weight = strength * hypot(area_vector[1], area_vector[2]) / separation
+        transported = momentum * normal
+        total = total + weight *
+                        @SVector [transported[1], transported[2], dot(energy, normal)]
+    end
+    return total
+end
+
+topology_of(cache::SurfaceBoundaryLayerCache) = cache.topology
 
 # Primary states of the donor of each of a panel's sides, taken from the global
 # state array. A boundary edge donates the panel's own state, which makes an
@@ -327,6 +429,21 @@ function _donor_states(states, panel, cache, inflow)
         donor = cache.edge_donor[edge]
         donor == 0 && return inflow[edge]
         return SVector{3}(@view states[:, donor])
+    end
+end
+
+# States of the panel across each side, irrespective of upwind direction. The
+# diffusion term is symmetric, so it needs both neighbours, not just the donor.
+function _neighbour_states(states, panel, cache)
+    return ntuple(4) do side
+        edge = cache.topology.cell_edges[panel, side]
+        edge == 0 && return zero(SVector{3, eltype(states)})
+        cache.topology.edge_kind[edge] === :interior ||
+            return SVector{3}(@view states[:, panel])
+        other = edge_partner(cache.topology, edge, panel)
+        (other == 0 || !cache.active[other]) &&
+            return SVector{3}(@view states[:, panel])
+        return SVector{3}(@view states[:, other])
     end
 end
 
@@ -475,7 +592,8 @@ function flow_ordering(cache::SurfaceBoundaryLayerCache)
         push!(downstream[donor], receiver)
         upstream_count[receiver] += 1
     end
-    ready = [panel for panel in 1:nfaces if upstream_count[panel] == 0]
+    ready = [panel for panel in 1:nfaces
+             if upstream_count[panel] == 0 && cache.active[panel]]
     order = Int[]
     sizehint!(order, nfaces)
     while !isempty(ready)
@@ -489,7 +607,8 @@ function flow_ordering(cache::SurfaceBoundaryLayerCache)
     if length(order) < nfaces
         visited = falses(nfaces)
         visited[order] .= true
-        append!(order, (panel for panel in 1:nfaces if !visited[panel]))
+        append!(order,
+            (panel for panel in 1:nfaces if !visited[panel] && cache.active[panel]))
     end
     return order
 end
@@ -625,10 +744,22 @@ function assemble_jacobian(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
     end
 
     for panel in 1:nfaces
+        if !cache.active[panel]
+            # Identity row: the residual above is constant for these panels.
+            for component in 1:3
+                push!(rows, 3 * (panel - 1) + component)
+                push!(columns, 3 * (panel - 1) + component)
+                push!(values, one(eltype(states)))
+            end
+            continue
+        end
         donors = _donor_states(states, panel, cache, inflow)
         own = SVector{3}(@view states[:, panel])
-        # Diagonal block: the source term plus any edge whose donor is this
-        # panel.
+        diffusive = cache.diffusion > 0
+        neighbours = diffusive ? _neighbour_states(states, panel, cache) : nothing
+        # Diagonal block: the source term, any edge whose donor is this panel,
+        # and — when the diffusion term is on — its own side of every symmetric
+        # edge flux.
         diagonal = ForwardDiff.jacobian(
             unknowns -> begin
                 updated = ntuple(4) do side
@@ -636,26 +767,60 @@ function assemble_jacobian(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
                     edge != 0 && cache.edge_donor[edge] == panel ? unknowns :
                     donors[side]
                 end
+                nearby = if diffusive
+                    ntuple(4) do side
+                        edge = cache.topology.cell_edges[panel, side]
+                        edge == 0 && return neighbours[side]
+                        other = cache.topology.edge_kind[edge] === :interior ?
+                                edge_partner(cache.topology, edge, panel) : 0
+                        (other == 0 || !cache.active[other]) ? unknowns :
+                        neighbours[side]
+                    end
+                else
+                    nothing
+                end
                 cell_residual(unknowns, updated, panel, mesh, cache,
-                    _cell_shear(unknowns, shear, panel, mesh, cache, couple_shear))
+                    _cell_shear(unknowns, shear, panel, mesh, cache, couple_shear),
+                    nearby)
             end, own)
         push_block!(diagonal, panel, panel)
 
+        # Every panel this one's residual reads: its donors, and — with
+        # diffusion on — every active neighbour, since that term is symmetric.
+        touched = Set{Int}()
         for side in 1:4
             edge = cache.topology.cell_edges[panel, side]
             edge == 0 && continue
             donor = cache.edge_donor[edge]
-            (donor == panel || donor == 0) && continue
+            donor != panel && donor != 0 && push!(touched, donor)
+            diffusive && cache.topology.edge_kind[edge] === :interior || continue
+            other = edge_partner(cache.topology, edge, panel)
+            other != 0 && other != panel && cache.active[other] && push!(touched, other)
+        end
+        for other in touched
             block = ForwardDiff.jacobian(
                 unknowns -> begin
-                    updated = ntuple(4) do other_side
-                        other_edge = cache.topology.cell_edges[panel, other_side]
-                        other_edge == edge ? unknowns : donors[other_side]
+                    updated = ntuple(4) do side
+                        edge = cache.topology.cell_edges[panel, side]
+                        edge != 0 && cache.edge_donor[edge] == other ? unknowns :
+                        donors[side]
+                    end
+                    nearby = if diffusive
+                        ntuple(4) do side
+                            edge = cache.topology.cell_edges[panel, side]
+                            edge == 0 && return neighbours[side]
+                            partner = cache.topology.edge_kind[edge] === :interior ?
+                                      edge_partner(cache.topology, edge, panel) : 0
+                            partner == other ? unknowns : neighbours[side]
+                        end
+                    else
+                        nothing
                     end
                     cell_residual(own, updated, panel, mesh, cache,
-                        _cell_shear(own, shear, panel, mesh, cache, couple_shear))
-                end, SVector{3}(@view states[:, donor]))
-            push_block!(block, panel, donor)
+                        _cell_shear(own, shear, panel, mesh, cache, couple_shear),
+                        nearby)
+                end, SVector{3}(@view states[:, other]))
+            push_block!(block, panel, other)
         end
     end
     return sparse(rows, columns, values, 3 * nfaces, 3 * nfaces)
@@ -676,9 +841,16 @@ function global_residual(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
     residual = Vector{element}(undef, 3 * mesh.nfaces)
     for panel in 1:mesh.nfaces
         own = SVector{3}(@view states[:, panel])
-        local_residual = cell_residual(own,
-            _donor_states(states, panel, cache, inflow), panel, mesh, cache,
-            _cell_shear(own, shear, panel, mesh, cache, couple_shear))
+        # A panel outside the solved region keeps whatever state it was given
+        # and contributes an identity row, so the system stays square and
+        # nonsingular without that panel influencing anything.
+        local_residual = if cache.active[panel]
+            cell_residual(own, _donor_states(states, panel, cache, inflow), panel,
+                mesh, cache, _cell_shear(own, shear, panel, mesh, cache, couple_shear),
+                cache.diffusion > 0 ? _neighbour_states(states, panel, cache) : nothing)
+        else
+            zero(SVector{3, element})
+        end
         residual[(3 * (panel - 1) + 1):(3 * panel)] .= local_residual
     end
     return residual
@@ -778,7 +950,8 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         sweeps::Integer = 0,
         outer_iterations::Integer = 25, newton_steps::Integer = 60,
         tolerance::Real = 1e-10, shear_relaxation::Real = 0.5, step_limit::Real = 1.0,
-        implicit_derivative::Bool = true, initial = nothing)
+        implicit_derivative::Bool = true, active = nothing, diffusion::Real = 0.0,
+        initial = nothing)
     rho > 0 || throw(ArgumentError("rho must be positive"))
     sweeps >= 0 || throw(ArgumentError("sweeps must be nonnegative"))
     newton_steps >= 0 || throw(ArgumentError("newton_steps must be nonnegative"))
@@ -814,7 +987,8 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
     function converge(inputs, _)
         velocity = reshape(inputs, shape)
         problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
-            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
+        active, diffusion)
         solution = _converge_states(mesh, problem, kinematic_viscosity, settings)
         # Called once, with the primal inputs. Keeping the lagged shear and the
         # diagnostics from that call is what lets the residual below be a
@@ -827,7 +1001,8 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
     function residual_of(unknowns, inputs, _)
         velocity = reshape(inputs, shape)
         problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
-            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
+        active, diffusion)
         return global_residual(reshape(unknowns, 3, mesh.nfaces), mesh, problem,
             inflow_states(mesh, problem), lagged[]; couple_shear = true)
     end
@@ -835,7 +1010,8 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
     function jacobian_of(_, unknowns, inputs, _)
         velocity = reshape(inputs, shape)
         problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
-            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
+        active, diffusion)
         return assemble_jacobian(reshape(unknowns, 3, mesh.nfaces), mesh, problem,
             inflow_states(mesh, problem), lagged[]; couple_shear = true)
     end
@@ -844,7 +1020,8 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         drdy = jacobian_of, lsolve = (matrix, right) -> lu(matrix) \ right)
 
     problem = build_surface_cache(mesh, edge_velocity, kinematic_viscosity; closure,
-        topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+        topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
+        active, diffusion)
     reported = diagnostics[]
     # Promoting the frozen lag to the state's element type gives it zero
     # partials, which is precisely the frozen-coefficient sensitivity described
@@ -1196,7 +1373,7 @@ function assemble_surface_result(mesh::Mesh, cache::SurfaceBoundaryLayerCache,
     force = zeros(element_type, 3)
     moment = zeros(element_type, 3)
     for panel in 1:nfaces
-        separated[panel] && continue
+        (separated[panel] || !cache.active[panel]) && continue
         panel_force = @view(wall_shear[panel, :]) .* mesh.areas[panel]
         force .+= panel_force
         moment .+= cross(@view(mesh.centers[panel, :]) .- reference, panel_force)
