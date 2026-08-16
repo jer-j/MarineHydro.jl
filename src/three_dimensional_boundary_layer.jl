@@ -66,7 +66,7 @@ along the outward body normal. `separated` flags panels where the attached
 closure has been left behind, and `attached` is its complement, which is the
 region the viscous loads may legitimately be integrated over.
 """
-struct ThreeDimensionalBoundaryLayerResult{V, M, B, F}
+struct ThreeDimensionalBoundaryLayerResult{V, M, B, F, D}
     edge_speed::V
     momentum_thickness::V
     shape_factor::V
@@ -82,6 +82,16 @@ struct ThreeDimensionalBoundaryLayerResult{V, M, B, F}
     attached::B
     force::F
     moment::F
+    diagnostics::D
+end
+
+# The march has no iteration to report; the globally coupled solve fills this
+# with its residual norm and step counts. A solver that can fail to converge
+# must say so in its result rather than only in its loads.
+function ThreeDimensionalBoundaryLayerResult(edge_speed, args...)
+    return ThreeDimensionalBoundaryLayerResult(edge_speed, args...,
+        (converged = true, residual_norm = zero(eltype(edge_speed)), sweeps = 0,
+            newton_steps = 0))
 end
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ struct SurfaceBoundaryLayerCache{TP, TM, T, C}
     gradients::Vector{NamedTuple{
         (:speed_x, :speed_y, :u_x, :u_y, :v_x, :v_y), NTuple{6, T}}}
     edge_donor::Vector{Int}
+    edge_influx::Vector{T}
     viscosity::T
     closure::C
 end
@@ -72,11 +73,12 @@ strip march cannot provide.
 function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
         kinematic_viscosity::Real; closure = ThreeDimensionalClosure(),
         topology = nothing, metrics = nothing, minimum_edge_speed = nothing,
-        weld_tolerance = nothing)
+        weld_tolerance = nothing, gradient_bound::Real = 1.0)
     size(edge_velocity) == (mesh.nfaces, 3) || throw(DimensionMismatch(
         "edge_velocity must have size (mesh.nfaces, 3)"))
     kinematic_viscosity > 0 ||
         throw(ArgumentError("kinematic_viscosity must be positive"))
+    gradient_bound > 0 || throw(ArgumentError("gradient_bound must be positive"))
 
     surface = isnothing(topology) ?
               build_surface_topology(mesh; weld_tolerance) : topology
@@ -105,11 +107,11 @@ function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
     end
 
     gradients = _least_squares_gradients(mesh, surface, geometry, speed, cosine, sine,
-        element_type)
-    donor = _upwind_donors(mesh, surface, geometry, speed, cosine, sine)
+        element_type, gradient_bound)
+    donor, influx = _upwind_donors(mesh, surface, geometry, speed, cosine, sine)
 
     return SurfaceBoundaryLayerCache(surface, geometry, speed, cosine, sine,
-        gradients, donor, convert(element_type, kinematic_viscosity), closure)
+        gradients, donor, influx, convert(element_type, kinematic_viscosity), closure)
 end
 
 # Weighted linear least squares for the in-surface gradient of the edge velocity
@@ -117,7 +119,7 @@ end
 # stencil could be cached; it is rebuilt here because the metrics carry
 # derivatives and the cost is negligible next to the Newton solve.
 function _least_squares_gradients(mesh, topology, metrics, speed, cosine, sine,
-        element_type)
+        element_type, bound)
     gradient_type = NamedTuple{
         (:speed_x, :speed_y, :u_x, :u_y, :v_x, :v_y), NTuple{6, element_type}}
     gradients = Vector{gradient_type}(undef, mesh.nfaces)
@@ -162,14 +164,50 @@ function _least_squares_gradients(mesh, topology, metrics, speed, cosine, sine,
         speed_gradient = inverse * speed_right
         u_gradient = inverse * u_right
         v_gradient = inverse * v_right
-        gradients[panel] = gradient_type((speed_gradient[1], speed_gradient[2],
-            u_gradient[1], u_gradient[2], v_gradient[1], v_gradient[2]))
+        rescale = _gradient_rescaling(speed_gradient, u_gradient, v_gradient,
+            sqrt(mesh.areas[panel]), speed[panel], bound)
+        gradients[panel] = gradient_type((rescale * speed_gradient[1],
+            rescale * speed_gradient[2], rescale * u_gradient[1],
+            rescale * u_gradient[2], rescale * v_gradient[1],
+            rescale * v_gradient[2]))
     end
     return gradients
 end
 
+raw"""
+    _gradient_rescaling(speed_gradient, u_gradient, v_gradient, size, speed, bound)
+
+Factor shrinking a cell's velocity gradients until the largest of them changes
+the edge velocity by no more than `bound` times itself across one cell.
+
+This is Lokatt's bounding of the velocity-gradient terms, and without it the
+solve does not run on a hull at all. Around the stem the local basis swings
+sharply from panel to panel across cells that are slivers, so differencing the
+rotated velocity components over short centroid separations produces gradients
+two orders of magnitude larger than anywhere else — on the KVLCC2 forebody
+``\partial u/\partial x`` reaches 129 against 0.04 on an ordinary panel. Those
+feed straight into `station_sources`, whose streamwise term then demands more
+momentum than the cell's inflow can supply, and the cell's momentum equation
+loses its positive-thickness root entirely. Newton is then asked to solve a
+system a handful of whose rows have no admissible solution, and it stalls with
+the residual concentrated on a thousandth of the wetted area.
+
+Rescaling uniformly rather than clipping each component keeps the direction of
+the gradient, which is what carries the crossflow information. Lokatt notes the
+same device perturbs the initial shape-factor development near the attachment
+line; that is the price of getting a solve at all there.
+"""
+function _gradient_rescaling(speed_gradient, u_gradient, v_gradient, size, speed,
+        bound)
+    largest = max(abs(speed_gradient[1]), abs(speed_gradient[2]), abs(u_gradient[1]),
+        abs(u_gradient[2]), abs(v_gradient[1]), abs(v_gradient[2]))
+    scaled = largest * size / max(speed, eps(typeof(speed)))
+    return scaled > bound ? bound / scaled : one(scaled)
+end
+
 function _upwind_donors(mesh, topology, metrics, speed, cosine, sine)
     donor = zeros(Int, topology.nedges)
+    influx = zeros(eltype(speed), topology.nedges)
     for edge in 1:topology.nedges
         left = topology.edge_cells[edge, 1]
         right = topology.edge_cells[edge, 2]
@@ -184,6 +222,7 @@ function _upwind_donors(mesh, topology, metrics, speed, cosine, sine)
             velocity = (speed[left] * cosine[left], speed[left] * sine[left])
             outward = velocity[1] * normal[1] + velocity[2] * normal[2]
             donor[edge] = outward >= 0 ? left : 0
+            influx[edge] = abs(outward)
             continue
         end
         left_velocity = (speed[left] * cosine[left], speed[left] * sine[left])
@@ -202,8 +241,9 @@ function _upwind_donors(mesh, topology, metrics, speed, cosine, sine)
                   (left_weight + right_weight)
         outward = blended[1] * normal[1] + blended[2] * normal[2]
         donor[edge] = outward >= 0 ? left : right
+        influx[edge] = abs(outward)
     end
-    return donor
+    return donor, influx
 end
 
 raw"""
@@ -283,16 +323,30 @@ function _donor_states(states, panel, cache, inflow)
     end
 end
 
-# Volume of flow entering `panel` through `edge`, i.e. the negative part of
-# q.m on the panel's own outward area vector. Zero — to the sign of a rounding
-# error — whenever the flow merely runs along the edge, which is exactly the
-# case a structured mesh aligned with the stream produces on every transverse
-# side.
+raw"""
+    _inflow_strength(cache, panel, edge)
+
+Volume of flow entering `panel` through `edge`, and zero when the edge is an
+outflow or the flow merely runs along it.
+
+Read straight off the donor chosen by `_upwind_donors`, so that the two can
+never disagree. They must not: the donor is decided on the inverse-distance
+*blended* edge velocity, and around the stem the two neighbouring cells point
+differently enough that a panel's own velocity gives the opposite sign. When
+this was computed independently from the panel's own velocity, `flow_ordering`
+was therefore not a topological order of the graph the fluxes actually use, and
+`initial_states` propagated arclength backwards into the stem — giving cells at
+the very start of the hull a momentum thickness four times the mid-body value.
+
+A side the flow runs parallel to carries a donor by the `>= 0` tie-break but no
+flux, and its influx is zero to rounding, which is what keeps a mesh aligned
+with the stream from chaining its rows together.
+"""
 function _inflow_strength(cache::SurfaceBoundaryLayerCache, panel::Integer,
         edge::Integer)
+    cache.edge_donor[edge] == panel && return zero(eltype(cache.edge_influx))
+    influx = cache.edge_influx[edge]
     area_vector = edge_area_vector_for(cache.topology, cache.metrics, edge, panel)
-    influx = -cache.speed[panel] * (cache.cosine[panel] * area_vector[1] +
-              cache.sine[panel] * area_vector[2])
     threshold = sqrt(eps(Float64)) * cache.speed[panel] *
                 hypot(area_vector[1], area_vector[2])
     return influx > threshold ? influx : zero(influx)
@@ -601,6 +655,9 @@ used.
 - `newton_steps`: maximum damped Newton iterations per outer pass.
 - `tolerance`: convergence threshold on the scaled residual norm.
 - `shear_relaxation`: under-relaxation of the lagged shear coefficient.
+- `step_limit`: largest move of any panel's transformed state in one Newton step.
+- `gradient_bound`: cap on the velocity change one cell's gradients imply across
+  it, relative to the local edge speed. See `_gradient_rescaling`.
 - `topology`, `metrics`, `cache`: supply precomputed geometry to avoid rebuilding
   it across a coupling loop or a derivative sweep.
 """
@@ -608,9 +665,11 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         kinematic_viscosity::Real; rho::Real = SETTINGS.rho, reference = (0, 0, 0),
         closure::ThreeDimensionalClosure = ThreeDimensionalClosure(),
         topology = nothing, metrics = nothing, cache = nothing,
-        minimum_edge_speed = nothing, weld_tolerance = nothing, sweeps::Integer = 0,
+        minimum_edge_speed = nothing, weld_tolerance = nothing, gradient_bound = 1.0,
+        sweeps::Integer = 0,
         outer_iterations::Integer = 25, newton_steps::Integer = 60,
-        tolerance::Real = 1e-10, shear_relaxation::Real = 0.5, initial = nothing)
+        tolerance::Real = 1e-10, shear_relaxation::Real = 0.5, step_limit::Real = 1.0,
+        initial = nothing)
     rho > 0 || throw(ArgumentError("rho must be positive"))
     sweeps >= 0 || throw(ArgumentError("sweeps must be nonnegative"))
     newton_steps >= 0 || throw(ArgumentError("newton_steps must be nonnegative"))
@@ -618,16 +677,18 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         throw(ArgumentError("outer_iterations must be at least one"))
     0 < shear_relaxation <= 1 ||
         throw(ArgumentError("shear_relaxation must lie in (0, 1]"))
+    step_limit > 0 || throw(ArgumentError("step_limit must be positive"))
 
     problem = isnothing(cache) ?
               build_surface_cache(mesh, edge_velocity, kinematic_viscosity; closure,
-        topology, metrics, minimum_edge_speed, weld_tolerance) : cache
+        topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound) : cache
     order = flow_ordering(problem)
     inflow = inflow_states(mesh, problem)
     states = isnothing(initial) ? initial_states(mesh, problem, order, inflow) :
              copy(initial)
 
     scale = _residual_scale(mesh, problem)
+    weights = _residual_weights(mesh)
     shear = _lagged_shear(states, mesh, problem, order)
     completed_sweeps = 0
     for _ in 1:sweeps
@@ -636,25 +697,25 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
             shear[panel] = _panel_shear(states, shear, panel, mesh, problem)
         end
         completed_sweeps += 1
-        norm(global_residual(states, mesh, problem, inflow, shear)) / scale <
-        tolerance && break
+        _weighted_norm(global_residual(states, mesh, problem, inflow, shear),
+            weights) / scale < tolerance && break
     end
 
     completed_newton = 0
     residual = global_residual(states, mesh, problem, inflow, shear)
     for _ in 1:outer_iterations
         completed_newton += _newton_solve!(states, residual, mesh, problem, inflow,
-            shear, closure, scale, tolerance, newton_steps)
-        residual = global_residual(states, mesh, problem, inflow, shear)
+            shear, closure, scale, tolerance, newton_steps, step_limit, weights)
         refreshed = _lagged_shear(states, mesh, problem, order)
         drift = maximum(abs, refreshed .- shear) /
                 max(maximum(abs, refreshed), eps(Float64))
         @. shear = shear + shear_relaxation * (refreshed - shear)
         residual = global_residual(states, mesh, problem, inflow, shear)
-        norm(residual) / scale < tolerance && drift < tolerance && break
+        _weighted_norm(residual, weights) / scale < tolerance && drift < tolerance &&
+            break
     end
 
-    residual_norm = norm(residual) / scale
+    residual_norm = _weighted_norm(residual, weights) / scale
     solution = SurfaceBoundaryLayerSolution(states, shear, residual_norm,
         completed_sweeps, completed_newton, residual_norm < tolerance)
     return assemble_surface_result(mesh, problem, solution, rho, reference)
@@ -665,11 +726,11 @@ end
 # `residual` is updated in place of the caller's value through the return of the
 # step count; the caller re-evaluates once the lag moves.
 function _newton_solve!(states, residual, mesh, cache, inflow, shear, closure, scale,
-        tolerance, newton_steps)
+        tolerance, newton_steps, step_limit, weights)
     taken = 0
     current = residual
     for _ in 1:newton_steps
-        norm(current) / scale < tolerance && break
+        _weighted_norm(current, weights) / scale < tolerance && break
         jacobian = assemble_jacobian(states, mesh, cache, inflow, shear)
         step = try
             -(lu(jacobian) \ current)
@@ -679,17 +740,18 @@ function _newton_solve!(states, residual, mesh, cache, inflow, shear, closure, s
         all(isfinite, step) || break
         accepted = false
         damping = one(eltype(states))
+        increment = reshape(step, 3, mesh.nfaces)
+        candidate = similar(states)
         for _ in 1:16
-            candidate = states .+ damping .* reshape(step, 3, mesh.nfaces)
-            if all(_is_admissible(SVector{3}(@view candidate[:, panel]), closure)
-            for panel in 1:mesh.nfaces)
-                trial = global_residual(candidate, mesh, cache, inflow, shear)
-                if all(isfinite, trial) && norm(trial) < norm(current)
-                    states .= candidate
-                    current = trial
-                    accepted = true
-                    break
-                end
+            _clipped_candidate!(candidate, states, increment, damping, closure,
+                step_limit)
+            trial = global_residual(candidate, mesh, cache, inflow, shear)
+            if all(isfinite, trial) &&
+               _weighted_norm(trial, weights) < _weighted_norm(current, weights)
+                states .= candidate
+                current = trial
+                accepted = true
+                break
             end
             damping /= 2
         end
@@ -697,6 +759,43 @@ function _newton_solve!(states, residual, mesh, cache, inflow, shear, closure, s
         accepted || break
     end
     return taken
+end
+
+raw"""
+    _clipped_candidate!(candidate, states, increment, damping, closure, step_limit)
+
+Apply `damping * increment` to every panel, shortening it *per panel* so that
+none leaves the closure's validity region and none moves further than
+`step_limit` in the transformed variables.
+
+Clipping per panel rather than rejecting the whole step is what makes the solve
+usable on a hull. The stem carries a handful of tiny, strongly skewed panels
+sitting on the stagnation line, and their Newton steps are enormous next to the
+rest of the surface; an all-or-nothing admissibility test lets any one of them
+veto the step for the other several hundred, so the line search collapses to a
+damping of order 1e-5 and the iteration never moves at all.
+
+The line search still requires the full residual to fall, so the clipping only
+changes the path taken, never the solution accepted. Near convergence every
+panel's step is small, no clipping is active, and the step is exactly Newton's.
+"""
+function _clipped_candidate!(candidate, states, increment, damping, closure,
+        step_limit)
+    for panel in axes(states, 2)
+        own = SVector{3}(@view states[:, panel])
+        move = damping * SVector{3}(@view increment[:, panel])
+        largest = maximum(abs, move)
+        largest > step_limit && (move = move * (step_limit / largest))
+        # Shorten until the panel is admissible. The transformed variables keep
+        # the iterate inside the closure for all but the largest excursions, so
+        # this loop almost always exits immediately.
+        for _ in 1:20
+            _is_admissible(own + move, closure) && break
+            move = move / 2
+        end
+        candidate[:, panel] .= own .+ move
+    end
+    return candidate
 end
 
 solve_surface_boundary_layer(grid::StructuredPanelGrid, args...; kwargs...) =
@@ -711,6 +810,40 @@ function _residual_scale(mesh, cache)
         total += cache.speed[panel]
     end
     return max(sqrt(mesh.nfaces) * 1e-3, sqrt(eps(Float64)) * total)
+end
+
+raw"""
+    _residual_weights(mesh)
+
+Per-panel weights making the residual norm a discrete surface integral rather
+than a raw sum over cells.
+
+A cell residual is a flux divergence, so it scales inversely with the cell size;
+weighting by ``\sqrt{A_i/\bar A}`` recovers the ``L^2`` norm of the underlying
+field. Without it the smallest panel dictates the convergence test. On the
+KVLCC2 hull the areas span a factor of 150 and a handful of slivers at the stem
+hold nine tenths of the unweighted squared residual, so the line search spends
+the whole solve on cells covering a thousandth of the surface.
+
+Row scaling by a fixed diagonal leaves the Newton direction untouched — the
+Jacobian and the residual scale together — so this changes only the merit
+function the line search descends and the quantity the tolerance is applied to.
+"""
+function _residual_weights(mesh::Mesh)
+    mean_area = sum(mesh.areas) / mesh.nfaces
+    return sqrt.(mesh.areas ./ mean_area)
+end
+
+# Norm of a stacked cell residual under the area weighting above.
+function _weighted_norm(residual, weights)
+    total = zero(eltype(residual))
+    for panel in eachindex(weights)
+        base = 3 * (panel - 1)
+        for component in 1:3
+            total += (weights[panel] * residual[base + component])^2
+        end
+    end
+    return sqrt(total)
 end
 
 # The shear-stress coefficient is advanced along the flow with the exact
@@ -859,5 +992,7 @@ function assemble_surface_result(mesh::Mesh, cache::SurfaceBoundaryLayerCache,
     return ThreeDimensionalBoundaryLayerResult(edge_speed, momentum_thickness,
         shape_factor, kinetic_shape_factor, crossflow_angle,
         solution.shear_coefficient, displacement, crossflow_displacement, friction,
-        wall_shear, transpiration, separated, .!separated, force, moment)
+        wall_shear, transpiration, separated, .!separated, force, moment,
+        (converged = solution.converged, residual_norm = solution.residual_norm,
+            sweeps = solution.sweeps, newton_steps = solution.newton_steps))
 end
