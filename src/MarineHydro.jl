@@ -86,6 +86,15 @@ export viscous_maneuvering_correction, apply_viscous_correction
 export separation_stern_mask
 export nondimensionalize_viscous_derivatives
 
+include("three_dimensional_boundary_layer.jl")
+export ThreeDimensionalClosure, ThreeDimensionalBoundaryLayerResult
+export SurfaceMarchTopology, build_march_topology, girth_ordering
+export solve_three_dimensional_boundary_layer
+export crossflow_parameter, thickness_tensors
+export turbulent_kinetic_shape_factor, turbulent_skin_friction
+export turbulent_slip_velocity, equilibrium_shear_coefficient, layer_thickness
+export equilibrium_shape_factor, advance_shear_coefficient
+
 include("surface_streamlines.jl")
 export SurfaceStreamline, surface_stagnation_panel
 export trace_surface_streamline, trace_surface_streamlines

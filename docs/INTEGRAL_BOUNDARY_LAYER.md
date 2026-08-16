@@ -45,6 +45,81 @@ This is deliberately a correction to the whole-hull inviscid result. It should
 not be added to a Schmitz-truncated result because the truncation is already a
 semi-empirical viscous and vortex correction.
 
+Following Wang et al., the correction is integrated over the **attached** region
+only. Downstream of separation the attached-flow closure is invalid, so any
+pressure or shear it predicts there carries no information. The shear
+contribution was already attached-only because the closure zeroes the wall
+stress past separation; the displacement-pressure integral now is too.
+
+## Truly three-dimensional model: status
+
+`src/three_dimensional_boundary_layer.jl` implements the crossflow-capable
+formulation that the quasi-3D model lacks. It solves the full momentum-loss
+tensor with two momentum equations and a kinetic energy equation,
+
+```math
+rac{\partial	heta_{xx}}{\partial x}+rac{\partial	heta_{xy}}{\partial y}+g_x=0,
+\quad
+rac{\partial	heta_{yx}}{\partial x}+rac{\partial	heta_{yy}}{\partial y}+g_y=0,
+\quad
+rac{\partial	heta^*_x}{\partial x}+rac{\partial	heta^*_y}{\partial y}+g_e=0,
+```
+
+in a local Cartesian surface basis, with Drela's shear-stress lag advanced
+alongside. The tensor structure and the crossflow parameter
+``A_c=e^{1-H_k}eta_w`` are Mughal's, as used by Lokatt and Eller; the scalar
+closures for ``H^*``, ``c_f``, ``U_s``, ``C_{	au,eq}`` and ``C_D`` are Drela's
+incompressible turbulent set. Compressibility, transition and the lateral
+curvature equation of Drela's four-equation formulation are out of scope.
+
+Two departures from the published sources are deliberate and are recorded here
+because they are not transcription:
+
+- The shear-lag source term as printed in Lokatt and Eller's conservation form
+  carries a sign that drives the shear stress *away* from equilibrium. The
+  physically correct relaxation is used instead, and because it is linear in
+  ``\sqrt{C_	au}`` it is integrated exactly rather than by explicit Euler.
+  That matters: on a hull ``\Delta s/\delta\sim40``, and an explicit update
+  oscillates violently enough to destroy the solution.
+- Two closure relations in that appendix could not be reconciled with the
+  quantities they are said to relate, so the corresponding Drela correlations
+  are used, which are the same lineage.
+
+### What is validated
+
+On a structured flat plate with a uniform edge velocity the march reproduces
+the turbulent flat-plate laws: momentum thickness within 2% and skin friction
+within 0.1% of ``	heta=0.036\,x\,Re_x^{-1/5}`` and
+``c_f=0.0592\,Re_x^{-1/5}`` at the downstream end, with the crossflow angle and
+every crossflow thickness identically zero. That is the essential check that the
+tensor closure and the three equations collapse correctly onto the
+two-dimensional limit. The first three or four stations carry a startup
+transient from the flat-plate initial estimate.
+
+### What does not yet work, and why
+
+The solver **fails on full hull geometry**, and the reason is structural rather
+than a matter of tuning. It is a space-marching scheme along the structured
+girth-line strips, and marching is well posed only while the external
+streamlines stay within the characteristic cone of the marching direction. On
+the KVLCC2 forebody the streamlines wrap around the stem at up to about fifty
+degrees to the girth lines, so information genuinely propagates from strip to
+strip faster than it propagates downstream, and the march breaks down within a
+few stations of the bow. Upwinding the girthwise fluxes on the sign of the
+crossflow velocity helps marginally but does not fix the underlying
+ill-posedness.
+
+The fix is the one both reference implementations use: a **globally coupled
+upwind surface solve** rather than a march. Lokatt and Eller discretise the
+whole surface with an upwind-biased finite-volume scheme and solve the sparse
+nonlinear system by Newton; Zhang uses a finite-element discretisation with a
+fully-simultaneous viscous-inviscid Newton coupling. Either replaces the
+station-by-station march with a single global system in the four states over
+all panels. That is the next piece of work, and it is a substantial one.
+
+Until then the quasi-3D model below remains the one wired into
+`viscous_maneuvering_correction`.
+
 ## What "quasi-3D" means
 
 The geometry, external velocity, shear direction, panel area, and moment arm

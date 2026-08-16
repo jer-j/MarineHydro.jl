@@ -4,6 +4,7 @@ using Test
     include("./benchmark_meshes.jl")
     include("./maneuvering.jl")
     include("./boundary_layers.jl")
+    include("./three_dimensional_boundary_layer.jl")
     include("./maneuvering_validation.jl")
     include("./consistency_with_Capytaine.jl")
     include("./greens_function.jl")

@@ -1033,14 +1033,22 @@ function viscous_maneuvering_correction(
     )
     real_correction_potentials = real.(correction_potentials)
 
-    sway_weight = mesh.normals[:, 2] .* mesh.areas
+    # Wang et al. truncate the velocity-derivative integrals where the flow
+    # leaves the after body, and the same argument applies with more force
+    # here: downstream of separation the attached-flow closure is invalid, so
+    # any pressure it predicts there is meaningless. The correction is
+    # therefore integrated over the attached region only. The shear
+    # contribution is already attached-only, because the closure sets the wall
+    # stress to zero once a station separates.
+    attached = .!base_boundary_layer.separated
+    sway_weight = mesh.normals[:, 2] .* mesh.areas .* attached
     yaw_mode = maneuvering_boundary_condition(
         mesh,
         :yaw;
         x_reference,
         y_reference,
     )
-    yaw_weight = yaw_mode .* mesh.areas
+    yaw_weight = yaw_mode .* mesh.areas .* attached
     pressure_derivatives = ViscousManeuveringDerivatives(
         -rho * forward_speed * dot(correction_gradients.sway[:, 1], sway_weight),
         -rho * forward_speed * dot(correction_gradients.yaw[:, 1], sway_weight),
