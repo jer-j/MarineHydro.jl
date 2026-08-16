@@ -1300,16 +1300,28 @@ function _newton_solve!(states, residual, mesh, cache, inflow, shear, closure, s
         increment = reshape(step, 3, mesh.nfaces)
         candidate = similar(states)
         for _ in 1:16
-            _clipped_candidate!(candidate, states, increment, damping, closure,
-                step_limit)
-            trial = global_residual(candidate, mesh, cache, inflow, shear)
-            if all(isfinite, trial) &&
-               _weighted_norm(trial, weights) < _weighted_norm(current, weights)
-                states .= candidate
-                current = trial
-                accepted = true
-                break
+            # Try the damped Newton step as it stands before capping how far any
+            # one panel may move. The cap exists so that a few panels asking for
+            # enormous steps cannot wreck the direction for everyone, but it is
+            # not free: it changes the direction, and once the iterate is close
+            # the uncapped step is the better one. Capping unconditionally left
+            # a measured third of the available residual reduction unused and
+            # stalled the solve; releasing it unconditionally sends the early
+            # iterations somewhere worse. Trying both and keeping whichever
+            # descends costs one extra residual evaluation per damping level.
+            for limit in (typemax(step_limit), step_limit)
+                _clipped_candidate!(candidate, states, increment, damping, closure,
+                    limit)
+                trial = global_residual(candidate, mesh, cache, inflow, shear)
+                if all(isfinite, trial) &&
+                   _weighted_norm(trial, weights) < _weighted_norm(current, weights)
+                    states .= candidate
+                    current = trial
+                    accepted = true
+                    break
+                end
             end
+            accepted && break
             damping /= 2
         end
         taken += 1
