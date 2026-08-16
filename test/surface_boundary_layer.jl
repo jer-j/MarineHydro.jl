@@ -296,6 +296,39 @@ end
         @test ForwardDiff.derivative(loose, 1.0)≈forward rtol=1e-6
     end
 
+    @testset "Flow ordering makes the Jacobian block triangular" begin
+        # The residual is first-order upwind, so if the flow ordering is a
+        # topological order of the graph the residual actually depends on, the
+        # Jacobian permuted into it is exactly block lower triangular. That is
+        # worth pinning: it is what makes a cell-by-cell sweep a march along the
+        # true flow, and it fails silently if the ordering is built from a
+        # different edge set than the residual uses — an edge carrying no flux
+        # still supplies a donor state and still has a nonzero flux derivative.
+        mesh = square_plate_mesh(; side = 2.0, cells = 8)
+        angle = deg2rad(35)
+        edge_velocity = zeros(mesh.nfaces, 3)
+        edge_velocity[:, 1] .= speed * cos(angle)
+        edge_velocity[:, 2] .= speed * sin(angle)
+        cache = MarineHydro.build_surface_cache(mesh, edge_velocity, viscosity)
+        order = flow_ordering(cache)
+        @test sort(order) == 1:mesh.nfaces
+
+        inflow = inflow_states(mesh, cache)
+        states = initial_states(mesh, cache, order, inflow)
+        shear = MarineHydro._lagged_shear(states, mesh, cache, order)
+        jacobian = assemble_jacobian(states, mesh, cache, inflow, shear)
+        permutation = vcat(([3 * (panel - 1) + component for component in 1:3]
+                            for panel in order)...)
+        permuted = Matrix(jacobian[permutation, permutation])
+        above = zero(eltype(permuted))
+        for row in axes(permuted, 1), column in axes(permuted, 2)
+            (row - 1) ÷ 3 < (column - 1) ÷ 3 &&
+                (above = max(above, abs(permuted[row, column])))
+        end
+        @test above == 0
+        @test maximum(abs, permuted) > 0
+    end
+
     @testset "Argument validation" begin
         mesh = square_plate_mesh(; cells = 6)
         edge_velocity = zeros(mesh.nfaces, 3)

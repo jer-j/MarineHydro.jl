@@ -467,11 +467,11 @@ function flow_ordering(cache::SurfaceBoundaryLayerCache)
         topology.edge_kind[edge] === :interior || continue
         donor = cache.edge_donor[edge]
         receiver = edge_partner(topology, edge, donor)
-        # A side the flow runs parallel to transports nothing, so it must not
-        # constrain the order: on a plate meshed square to the stream every
-        # transverse side would otherwise chain the rows together and make the
-        # sweep march across the flow as well as along it.
-        _inflow_strength(cache, receiver, edge) > 0 || continue
+        # Every edge whose donor is the other cell, whether or not it carries
+        # flux. This must be the residual's dependency graph exactly: a
+        # zero-flux edge still supplies a donor state, and its flux still has a
+        # nonzero derivative, so leaving it out gave an order in which the
+        # permuted Jacobian was not triangular and a sweep that was not a march.
         push!(downstream[donor], receiver)
         upstream_count[receiver] += 1
     end
@@ -510,6 +510,67 @@ end
 
 # Local three-by-three solve for one panel with its donors frozen. Used by the
 # Gauss-Seidel globalisation, not by the Newton phase.
+raw"""
+    _march_panel!(states, panel, mesh, cache, inflow, shear, step_limit)
+
+One damped Newton step on a single cell, judged on that cell's own residual.
+
+Because the residual is first-order upwind and the flow ordering is a
+topological order of its dependency graph, the Jacobian permuted into that order
+is *exactly* block lower triangular. Sweeping it cell by cell is therefore a
+march along the true flow rather than along mesh lines, and — the point here —
+each cell's acceptance test is local and independent of every other.
+
+That independence is what makes a closed body solvable at all. A double body
+has no outlet: every finite directed acyclic graph has a sink, so some cell
+receives flux from all sides and donates to none. Its own state then enters its
+own residual only through the source term, of order ``c_f/2``, while it must
+absorb the whole defect arriving from upstream. Its equation has no solution.
+Under a *global* line search that one cell dominates the residual norm and
+blocks the step for every other cell on the hull; under this one it simply fails
+to improve, alone, and the rest of the surface converges around it.
+
+Taking one damped step rather than converging the cell outright matters too: the
+local three-by-three problems are stiff enough that a plain Newton solve on them
+hits its iteration cap on half the cells of a flat plate.
+"""
+function _march_panel!(states, panel, mesh, cache, inflow, shear, step_limit)
+    donors = _donor_states(states, panel, cache, inflow)
+    own = SVector{3}(@view states[:, panel])
+    residual_of = unknowns -> begin
+        updated = ntuple(4) do side
+            edge = cache.topology.cell_edges[panel, side]
+            edge != 0 && cache.edge_donor[edge] == panel ? unknowns : donors[side]
+        end
+        cell_residual(unknowns, updated, panel, mesh, cache, shear)
+    end
+    current = residual_of(own)
+    all(isfinite, current) || return false
+    jacobian = ForwardDiff.jacobian(residual_of, own)
+    step = try
+        -(jacobian \ current)
+    catch
+        return false
+    end
+    all(isfinite, step) || return false
+
+    largest = maximum(abs, step)
+    largest > step_limit && (step = step * (step_limit / largest))
+    damping = one(eltype(step))
+    for _ in 1:16
+        candidate = own + damping * step
+        if _is_admissible(candidate, cache.closure)
+            trial = residual_of(candidate)
+            if all(isfinite, trial) && norm(trial) < norm(current)
+                states[:, panel] .= candidate
+                return true
+            end
+        end
+        damping /= 2
+    end
+    return false
+end
+
 function _relax_panel!(states, panel, mesh, cache, inflow, shear)
     donors = _donor_states(states, panel, cache, inflow)
     guess = SVector{3}(@view states[:, panel])
@@ -819,7 +880,8 @@ function _converge_states(mesh::Mesh, problem::SurfaceBoundaryLayerCache,
     completed_sweeps = 0
     for _ in 1:settings.sweeps
         for panel in order
-            _relax_panel!(states, panel, mesh, problem, inflow, shear)
+            _march_panel!(states, panel, mesh, problem, inflow, shear,
+                settings.step_limit)
             shear[panel] = _panel_shear(states, shear, panel, mesh, problem)
         end
         completed_sweeps += 1
