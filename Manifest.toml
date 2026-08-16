@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "acf0b25a4861e3a16150b4bc42b42145476633ad"
+project_hash = "f0fec4a0b1554d3a8772a3cdec4bce86b4a48d85"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "5970c86505ae9c07bf5bc521ef2bbbb3849e8b7b"
@@ -1381,7 +1381,7 @@ uuid = "dbb5928d-eab1-5f90-85c2-b9b0edb7c900"
 version = "0.4.3"
 
 [[deps.MarineHydro]]
-deps = ["CairoMakie", "DifferentiationInterface", "DimensionalData", "FiniteDifferences", "ForwardDiff", "ImplicitAD", "Integrals", "LinearAlgebra", "LinearSolve", "Meshes", "PyCall", "SpecialFunctions", "StaticArrays", "Unitful", "Zygote"]
+deps = ["CairoMakie", "DifferentiationInterface", "DimensionalData", "FiniteDifferences", "ForwardDiff", "ImplicitAD", "Integrals", "LinearAlgebra", "LinearSolve", "Meshes", "NonlinearSolve", "PyCall", "SpecialFunctions", "StaticArrays", "Unitful", "Zygote"]
 path = "."
 uuid = "8d7a907f-d253-4c14-a318-41dd3f310a02"
 version = "0.1.0"

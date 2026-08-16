@@ -101,6 +101,13 @@ export turbulent_kinetic_shape_factor, turbulent_skin_friction
 export turbulent_slip_velocity, equilibrium_shear_coefficient, layer_thickness
 export equilibrium_shape_factor, advance_shear_coefficient
 
+include("surface_boundary_layer.jl")
+export SurfaceBoundaryLayerCache, SurfaceBoundaryLayerSolution
+export build_surface_cache, solve_surface_boundary_layer
+export flow_ordering, inflow_states, initial_states
+export cell_residual, global_residual, assemble_jacobian
+export rotation_into, edge_partner, edge_flux_contribution
+
 include("surface_streamlines.jl")
 export SurfaceStreamline, surface_stagnation_panel
 export trace_surface_streamline, trace_surface_streamlines
