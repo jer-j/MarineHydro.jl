@@ -684,8 +684,16 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound) : cache
     order = flow_ordering(problem)
     inflow = inflow_states(mesh, problem)
-    states = isnothing(initial) ? initial_states(mesh, problem, order, inflow) :
-             copy(initial)
+    # A warm start may arrive as plain numbers while this solve carries dual
+    # numbers, which is exactly what happens when a coupling loop reuses the
+    # base state to seed a differentiated one, so promote rather than copy.
+    states = if isnothing(initial)
+        initial_states(mesh, problem, order, inflow)
+    else
+        size(initial) == (3, mesh.nfaces) || throw(DimensionMismatch(
+            "initial must have size (3, mesh.nfaces)"))
+        convert(Matrix{promote_type(eltype(initial), eltype(problem.speed))}, initial)
+    end
 
     scale = _residual_scale(mesh, problem)
     weights = _residual_weights(mesh)
@@ -994,5 +1002,6 @@ function assemble_surface_result(mesh::Mesh, cache::SurfaceBoundaryLayerCache,
         solution.shear_coefficient, displacement, crossflow_displacement, friction,
         wall_shear, transpiration, separated, .!separated, force, moment,
         (converged = solution.converged, residual_norm = solution.residual_norm,
-            sweeps = solution.sweeps, newton_steps = solution.newton_steps))
+            sweeps = solution.sweeps, newton_steps = solution.newton_steps,
+            states = solution.states))
 end

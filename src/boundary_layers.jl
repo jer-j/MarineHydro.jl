@@ -800,6 +800,59 @@ function _tangential_projection(mesh::Mesh, velocity::AbstractMatrix)
 end
 
 raw"""
+    _layer_geometry(closure, mesh)
+
+Geometry a boundary-layer closure needs rebuilt once rather than per solve.
+
+The quasi-3D march works off the grid's strips and needs nothing. The surface
+solver needs the welded topology and its metrics, and a correction evaluates the
+layer `coupling_iterations + 1` times for each of `1 + 2n` states under central
+differencing, so rebuilding the topology inside each of those would dominate the
+cost. The topology is integer connectivity and the metrics depend only on the
+mesh, neither of which the sway velocity or the yaw rate touch.
+"""
+_layer_geometry(::HeadTurbulentClosure, ::Mesh) = nothing
+
+function _layer_geometry(::ThreeDimensionalClosure, mesh::Mesh)
+    topology = build_surface_topology(mesh)
+    return (topology = topology, metrics = build_surface_metrics(mesh, topology))
+end
+
+"""
+    _solve_layer(closure, grid, edge_velocity, kinematic_viscosity; kwargs...)
+
+Solve the boundary layer with whichever method `closure` selects, presenting the
+one interface the coupling needs.
+
+Both methods return a result carrying `transpiration_velocity`, `force`,
+`moment` and `separated`, which is everything
+[`viscous_maneuvering_correction`](@ref) consumes.
+"""
+function _solve_layer(closure::HeadTurbulentClosure, grid, edge_velocity,
+        kinematic_viscosity; rho, reference, minimum_edge_speed,
+        integration_substeps, stop_at_separation, geometry = nothing,
+        initial = nothing)
+    return solve_quasi3d_boundary_layer(grid, edge_velocity, kinematic_viscosity;
+        rho, reference, closure, minimum_edge_speed, integration_substeps,
+        stop_at_separation)
+end
+
+function _solve_layer(closure::ThreeDimensionalClosure, grid, edge_velocity,
+        kinematic_viscosity; rho, reference, minimum_edge_speed,
+        integration_substeps = nothing, stop_at_separation = true,
+        geometry = nothing, initial = nothing)
+    topology = isnothing(geometry) ? nothing : geometry.topology
+    metrics = isnothing(geometry) ? nothing : geometry.metrics
+    return solve_surface_boundary_layer(grid, edge_velocity, kinematic_viscosity;
+        rho, reference, closure, minimum_edge_speed, topology, metrics, initial)
+end
+
+# The converged state of a surface solve, for warm-starting the next one. The
+# march has nothing to carry over.
+_layer_warm_start(::HeadTurbulentClosure, result) = nothing
+_layer_warm_start(::ThreeDimensionalClosure, result) = result.diagnostics.states
+
+raw"""
     viscous_maneuvering_correction(
         grid,
         surge_gradient,
@@ -814,13 +867,23 @@ raw"""
         integration_substeps=8,
         stop_at_separation=true,
         linearization=:auto,
+        closure=HeadTurbulentClosure(),
         coupling_iterations=0,
         coupling_relaxation=0.5,
+        coupling_tolerance=1e-6,
     )
 
-Linearize the quasi-3D integral boundary layer with respect to sway velocity
-and yaw rate. Direct shear-load derivatives are combined with a
-displacement-thickness correction.
+Linearize the integral boundary layer with respect to sway velocity and yaw
+rate. Direct shear-load derivatives are combined with a displacement-thickness
+correction.
+
+`closure` selects the method. `HeadTurbulentClosure` — the default, and what
+every existing result was produced with — runs the quasi-3D strip march.
+`ThreeDimensionalClosure` runs the globally coupled surface solve of
+[`solve_surface_boundary_layer`](@ref), which carries a crossflow: its
+transpiration is the surface divergence of ``u_e\boldsymbol{\delta}^*`` with
+*both* components of the displacement thickness, where the march has only the
+streamwise one, and its wall shear is skewed out of the local stream.
 For each motion ``j``, the differentiated transpiration condition is solved by
 the existing BEM and contributes
 
@@ -834,7 +897,11 @@ it after a Schmitz stern truncation mixes two different viscous corrections
 and is not recommended. The default `coupling_iterations=0` is one-way. Each
 positive coupling iteration solves the transpiration potential, projects its
 surface velocity tangentially, and feeds it back to the boundary-layer edge
-condition with `coupling_relaxation`.
+condition with `coupling_relaxation`, stopping once the relative change falls
+below `coupling_tolerance`. With `ThreeDimensionalClosure` each iteration warm
+starts from the previous converged state, which is what keeps a coupled sweep
+affordable: without it the cost is `coupling_iterations * (1 + 2 * n_states)`
+cold solves.
 """
 function viscous_maneuvering_correction(
     grid::StructuredPanelGrid,
@@ -846,7 +913,7 @@ function viscous_maneuvering_correction(
     rho::Real=SETTINGS.rho,
     x_reference::Real=0,
     y_reference::Real=0,
-    closure::HeadTurbulentClosure=HeadTurbulentClosure(),
+    closure::Union{HeadTurbulentClosure,ThreeDimensionalClosure}=HeadTurbulentClosure(),
     minimum_edge_speed=nothing,
     integration_substeps::Integer=8,
     stop_at_separation::Bool=true,
@@ -854,6 +921,7 @@ function viscous_maneuvering_correction(
     relative_difference_step::Real=1e-5,
     coupling_iterations::Integer=0,
     coupling_relaxation::Real=0.5,
+    coupling_tolerance::Real=1e-6,
     green_functions=(Rankine(), RankineReflected()),
 )
     mesh = grid.mesh
@@ -874,6 +942,9 @@ function viscous_maneuvering_correction(
     0 < coupling_relaxation <= 1 || throw(ArgumentError(
         "coupling_relaxation must be in (0, 1]",
     ))
+    coupling_tolerance > 0 || throw(ArgumentError(
+        "coupling_tolerance must be positive",
+    ))
 
     wavenumber = zero(mesh.centers[1, 1])
     S, K = assemble_matrices(
@@ -882,6 +953,7 @@ function viscous_maneuvering_correction(
         wavenumber;
         direct=false,
     )
+    layer_geometry = _layer_geometry(closure, mesh)
 
     function coupled_boundary_layer_state(state)
         rigid_edge_velocity = body_relative_edge_velocity(
@@ -901,19 +973,23 @@ function viscous_maneuvering_correction(
             3,
         )
         iteration_residual = zero(eltype(rigid_edge_velocity))
+        warm_start = nothing
         for _ in 1:coupling_iterations
             edge_velocity = rigid_edge_velocity .+ correction_edge_velocity
-            result = solve_quasi3d_boundary_layer(
+            result = _solve_layer(
+                closure,
                 grid,
                 edge_velocity,
                 kinematic_viscosity;
                 rho,
                 reference=(x_reference, y_reference, zero(x_reference)),
-                closure,
                 minimum_edge_speed,
                 integration_substeps,
                 stop_at_separation,
+                geometry=layer_geometry,
+                initial=warm_start,
             )
+            warm_start = _layer_warm_start(closure, result)
             _, correction_sources = solve(
                 K,
                 S,
@@ -938,18 +1014,23 @@ function viscous_maneuvering_correction(
             iteration_residual = iszero(denominator) ? change :
                 change / denominator
             correction_edge_velocity = relaxed_edge_velocity
+            # The loop computed this every pass and never acted on it, so a
+            # converged coupling paid for every remaining iteration.
+            iteration_residual < coupling_tolerance && break
         end
         final_edge_velocity = rigid_edge_velocity .+ correction_edge_velocity
-        result = solve_quasi3d_boundary_layer(
+        result = _solve_layer(
+            closure,
             grid,
             final_edge_velocity,
             kinematic_viscosity;
             rho,
             reference=(x_reference, y_reference, zero(x_reference)),
-            closure,
             minimum_edge_speed,
             integration_substeps,
             stop_at_separation,
+            geometry=layer_geometry,
+            initial=warm_start,
         )
         return result, iteration_residual
     end

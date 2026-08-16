@@ -75,17 +75,6 @@ export nondimensionalize_maneuvering_derivatives
 export potential_flow_hydrodynamic_derivatives
 export solve_wang_maneuvering, solve_potential_flow_maneuvering, wang_stern_mask
 
-include("boundary_layers.jl")
-export HeadTurbulentClosure, IntegralBoundaryLayerResult
-export Quasi3DBoundaryLayerResult, ViscousManeuveringDerivatives
-export ViscousManeuveringCorrectionResult
-export head_kinetic_shape_factor, head_skin_friction_coefficient
-export head_entrainment_coefficient, solve_head_boundary_layer
-export body_relative_edge_velocity, solve_quasi3d_boundary_layer
-export viscous_maneuvering_correction, apply_viscous_correction
-export separation_stern_mask
-export nondimensionalize_viscous_derivatives
-
 include("surface_topology.jl")
 export SurfaceTopology, SurfaceMetrics
 export weld_vertices, build_surface_topology, build_surface_metrics
@@ -107,6 +96,24 @@ export build_surface_cache, solve_surface_boundary_layer
 export flow_ordering, inflow_states, initial_states
 export cell_residual, global_residual, assemble_jacobian
 export rotation_into, edge_partner, edge_flux_contribution
+
+# After the surface solver: `viscous_maneuvering_correction` dispatches on the
+# closure type, so `ThreeDimensionalClosure` must already exist when its
+# signature is evaluated.
+include("boundary_layers.jl")
+export HeadTurbulentClosure, IntegralBoundaryLayerResult
+export Quasi3DBoundaryLayerResult, ViscousManeuveringDerivatives
+export ViscousManeuveringCorrectionResult
+export head_kinetic_shape_factor, head_skin_friction_coefficient
+export head_entrainment_coefficient, solve_head_boundary_layer
+export body_relative_edge_velocity, solve_quasi3d_boundary_layer
+export viscous_maneuvering_correction, apply_viscous_correction
+export separation_stern_mask
+export nondimensionalize_viscous_derivatives
+
+include("virtual_captive_tests.jl")
+export VirtualCaptiveRun, VirtualCaptiveTest
+export virtual_captive_test, fit_captive_coefficients
 
 include("surface_streamlines.jl")
 export SurfaceStreamline, surface_stagnation_panel
