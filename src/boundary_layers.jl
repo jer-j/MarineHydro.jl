@@ -781,6 +781,40 @@ function _velocity_derivative_sum(first::ViscousManeuveringDerivatives, second)
     )
 end
 
+raw"""
+    attachment_weight(shape_factor, closure; width = 0.08)
+
+Smooth indicator of attached flow, going from one to zero as the shape factor
+crosses the closure's separation value.
+
+```math
+w(H)=\tfrac12\left[1-\tanh\!\left(\frac{H-H_{sep}}{\Delta}\right)\right]
+```
+
+The correction integrates its pressure contribution over the attached region
+only, following Wang et al., and a hard mask makes that integral a step function
+of the sway velocity: a panel that separates under a perturbation removes its
+whole contribution at once. That step is the only remaining discontinuity in the
+map from the motion to the loads — the transformed state variables keep the
+shape factor inside the closure's validity range everywhere else — and it is why
+forward-mode differentiation is refused whenever separation is present.
+
+Replacing it with this ramp makes the map smooth, so a forward-mode derivative
+agrees with a central difference even with separated panels on the hull. `width`
+is in shape-factor units; at the default the weight falls from 0.9 to 0.1 across
+about 0.18 in ``H``, roughly one panel's worth of shape-factor development near
+the stern.
+
+The boolean `separated` is kept for reporting and for
+[`separation_stern_mask`](@ref); it is this weight, not that flag, that enters
+anything differentiated.
+"""
+function attachment_weight(shape_factor, closure; width::Real=0.08)
+    width > 0 || throw(ArgumentError("width must be positive"))
+    excess = (shape_factor - closure.separation_shape_factor) / width
+    return (one(excess) - tanh(excess)) / 2
+end
+
 function _tangential_projection(mesh::Mesh, velocity::AbstractMatrix)
     size(velocity) == (mesh.nfaces, 3) || throw(DimensionMismatch(
         "velocity must have size (mesh.nfaces, 3)",
@@ -922,6 +956,7 @@ function viscous_maneuvering_correction(
     coupling_iterations::Integer=0,
     coupling_relaxation::Real=0.5,
     coupling_tolerance::Real=1e-6,
+    separation_width::Real=0.08,
     green_functions=(Rankine(), RankineReflected()),
 )
     mesh = grid.mesh
@@ -1047,8 +1082,17 @@ function viscous_maneuvering_correction(
     base_state = [zero(forward_speed), zero(forward_speed)]
     base_boundary_layer, base_coupling_residual =
         coupled_boundary_layer_state(base_state)
+    # Two separate things make the map non-smooth, and only one of them is
+    # fixed by the attachment ramp. The ramp removes the step in the *outer*
+    # integration weight. Inside the layer solve, `stop_at_separation` clamps
+    # the shape factor at its separation value and freezes the station, which
+    # is a kink no ramp outside can smooth. Forward mode is therefore safe with
+    # separation present only when both are relaxed. A coupled solve is refused
+    # regardless: the feedback runs through a complex boundary element solve.
+    smooth_separation = separation_width > 0 && !stop_at_separation
     selected_linearization = if linearization === :auto
-        any(base_boundary_layer.separated) || coupling_iterations > 0 ?
+        coupling_iterations > 0 ||
+            (any(base_boundary_layer.separated) && !smooth_separation) ?
             :central : :forwarddiff
     else
         linearization
@@ -1121,7 +1165,12 @@ function viscous_maneuvering_correction(
     # therefore integrated over the attached region only. The shear
     # contribution is already attached-only, because the closure sets the wall
     # stress to zero once a station separates.
-    attached = .!base_boundary_layer.separated
+    attached = separation_width > 0 ?
+        attachment_weight.(
+            base_boundary_layer.shape_factor,
+            Ref(closure);
+            width=separation_width,
+        ) : convert(Vector{eltype(mesh.areas)}, .!base_boundary_layer.separated)
     sway_weight = mesh.normals[:, 2] .* mesh.areas .* attached
     yaw_mode = maneuvering_boundary_condition(
         mesh,

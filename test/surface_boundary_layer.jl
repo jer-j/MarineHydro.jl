@@ -1,4 +1,5 @@
 import FiniteDifferences
+import ForwardDiff
 
 using LinearAlgebra
 using MarineHydro
@@ -230,6 +231,69 @@ end
             flat, vec(states))[1]
         @test size(analytic) == size(numeric)
         @test norm(analytic - numeric) < 1e-6 * norm(numeric)
+    end
+
+    @testset "Implicit derivative matches finite differences" begin
+        # The converged state satisfies R = 0, so its sensitivity comes from the
+        # implicit function theorem. The check that this is right, rather than
+        # merely cheap, is that it reproduces a central difference of the whole
+        # solve -- and that it does so without depending on how many Newton
+        # steps the iteration happened to take.
+        mesh = square_plate_mesh(; side = 2.0, cells = 12)
+        angle = deg2rad(35)
+        direction = [cos(angle), sin(angle), 0.0]
+        drag(speed) = begin
+            edge_velocity = zeros(eltype(speed), mesh.nfaces, 3)
+            for axis in 1:3
+                edge_velocity[:, axis] .= speed * direction[axis]
+            end
+            layer = solve_surface_boundary_layer(mesh, edge_velocity, viscosity;
+                rho = 1000.0)
+            layer.force[1]
+        end
+        forward = ForwardDiff.derivative(drag, 1.0)
+        central = FiniteDifferences.central_fdm(5, 1)(drag, 1.0)
+        @test abs(central) > 0
+        @test forward≈central rtol=5e-3
+
+        # The own-cell shear coupling is what makes that agreement hold: with the
+        # lag frozen the same comparison is about ten per cent out. Check it
+        # where it enters, in the linearisation, rather than by differentiating
+        # the whole iteration again.
+        edge_velocity = zeros(mesh.nfaces, 3)
+        for axis in 1:3
+            edge_velocity[:, axis] .= direction[axis]
+        end
+        cache = MarineHydro.build_surface_cache(mesh, edge_velocity, viscosity)
+        order = flow_ordering(cache)
+        inflow = inflow_states(mesh, cache)
+        states = initial_states(mesh, cache, order, inflow)
+        shear = MarineHydro._lagged_shear(states, mesh, cache, order)
+        coupled = assemble_jacobian(states, mesh, cache, inflow, shear;
+            couple_shear = true)
+        frozen = assemble_jacobian(states, mesh, cache, inflow, shear)
+        @test norm(coupled - frozen) > 1e-3 * norm(frozen)
+        # Coupling must not disturb the sparsity, which is the property the
+        # whole hand-assembled Jacobian rests on.
+        @test size(coupled) == size(frozen)
+
+        coupled_residual(vector) = global_residual(reshape(vector, 3, mesh.nfaces),
+            mesh, cache, inflow, shear; couple_shear = true)
+        numeric = FiniteDifferences.jacobian(FiniteDifferences.central_fdm(5, 1),
+            coupled_residual, vec(states))[1]
+        @test norm(Matrix(coupled) - numeric) < 1e-6 * norm(numeric)
+
+        # Independent of the iteration count, which is the property that
+        # differentiating the iteration itself does not have.
+        loose(speed) = begin
+            edge_velocity = zeros(eltype(speed), mesh.nfaces, 3)
+            for axis in 1:3
+                edge_velocity[:, axis] .= speed * direction[axis]
+            end
+            solve_surface_boundary_layer(mesh, edge_velocity, viscosity; rho = 1000.0,
+                newton_steps = 12).force[1]
+        end
+        @test ForwardDiff.derivative(loose, 1.0)≈forward rtol=1e-6
     end
 
     @testset "Argument validation" begin

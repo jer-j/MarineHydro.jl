@@ -6,6 +6,7 @@ using StaticArrays
 using LinearAlgebra
 using LinearAlgebra: cross, dot, norm
 using ImplicitAD: implicit_linear
+import ImplicitAD
 using DimensionalData
 
 const τ̅ = 2π
@@ -110,6 +111,9 @@ export body_relative_edge_velocity, solve_quasi3d_boundary_layer
 export viscous_maneuvering_correction, apply_viscous_correction
 export separation_stern_mask
 export nondimensionalize_viscous_derivatives
+
+include("mesh_deformation.jl")
+export deform_mesh, beam_deformation_basis
 
 include("virtual_captive_tests.jl")
 export VirtualCaptiveRun, VirtualCaptiveTest

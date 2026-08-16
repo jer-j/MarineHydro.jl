@@ -199,9 +199,16 @@ line; that is the price of getting a solve at all there.
 """
 function _gradient_rescaling(speed_gradient, u_gradient, v_gradient, size, speed,
         bound)
-    largest = max(abs(speed_gradient[1]), abs(speed_gradient[2]), abs(u_gradient[1]),
-        abs(u_gradient[2]), abs(v_gradient[1]), abs(v_gradient[2]))
-    scaled = largest * size / max(speed, eps(typeof(speed)))
+    # Frobenius norms, not the largest component. The local basis is fixed by
+    # the panel's own vertex order and has no physical orientation, so a measure
+    # that depends on which way it happens to point makes the rescaling — and
+    # with it the answer — a function of the mesh's winding. On a hull whose two
+    # halves are mirrored that shows up immediately as an asymmetric solution to
+    # a symmetric problem.
+    velocity = sqrt(u_gradient[1]^2 + u_gradient[2]^2 + v_gradient[1]^2 +
+                    v_gradient[2]^2)
+    magnitude = hypot(speed_gradient[1], speed_gradient[2])
+    scaled = max(velocity, magnitude) * size / max(speed, eps(typeof(speed)))
     return scaled > bound ? bound / scaled : one(scaled)
 end
 
@@ -536,7 +543,7 @@ to it. Each edge therefore contributes one three-by-three block to each of its
 two panels, differentiated once with respect to the donor state.
 """
 function assemble_jacobian(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
-        inflow, shear)
+        inflow, shear; couple_shear::Bool = false)
     nfaces = mesh.nfaces
     rows = Int[]
     columns = Int[]
@@ -568,7 +575,8 @@ function assemble_jacobian(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
                     edge != 0 && cache.edge_donor[edge] == panel ? unknowns :
                     donors[side]
                 end
-                cell_residual(unknowns, updated, panel, mesh, cache, shear)
+                cell_residual(unknowns, updated, panel, mesh, cache,
+                    _cell_shear(unknowns, shear, panel, mesh, cache, couple_shear))
             end, own)
         push_block!(diagonal, panel, panel)
 
@@ -583,7 +591,8 @@ function assemble_jacobian(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
                         other_edge = cache.topology.cell_edges[panel, other_side]
                         other_edge == edge ? unknowns : donors[other_side]
                     end
-                    cell_residual(own, updated, panel, mesh, cache, shear)
+                    cell_residual(own, updated, panel, mesh, cache,
+                        _cell_shear(own, shear, panel, mesh, cache, couple_shear))
                 end, SVector{3}(@view states[:, donor]))
             push_block!(block, panel, donor)
         end
@@ -597,15 +606,47 @@ raw"""
 Residual of every panel, flattened to a vector of length ``3N``.
 """
 function global_residual(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
-        inflow, shear)
-    residual = Vector{eltype(states)}(undef, 3 * mesh.nfaces)
+        inflow, shear; couple_shear::Bool = false)
+    # The implicit-function path evaluates this with a primal state against a
+    # cache built from dual inputs, which is the whole point of it: the
+    # derivative enters through the edge velocity, not through the unknowns.
+    element = promote_type(eltype(states), eltype(cache.speed), eltype(shear),
+        eltype(mesh.areas))
+    residual = Vector{element}(undef, 3 * mesh.nfaces)
     for panel in 1:mesh.nfaces
         own = SVector{3}(@view states[:, panel])
         local_residual = cell_residual(own,
-            _donor_states(states, panel, cache, inflow), panel, mesh, cache, shear)
+            _donor_states(states, panel, cache, inflow), panel, mesh, cache,
+            _cell_shear(own, shear, panel, mesh, cache, couple_shear))
         residual[(3 * (panel - 1) + 1):(3 * panel)] .= local_residual
     end
     return residual
+end
+
+raw"""
+    _cell_shear(own, shear, panel, mesh, cache, couple)
+
+The shear field a cell's residual should see.
+
+With `couple == false` this is the lagged field itself, which is what the Newton
+solve wants: the lag is deliberately outside the system so that the Jacobian
+keeps the sparsity of the upwind graph.
+
+With `couple == true` the panel's own entry is recomputed from its own state,
+its donors' entries staying frozen. At a converged state this changes nothing —
+the recomputation reproduces exactly what the outer loop converged to — so the
+solution is untouched and only the *derivative* differs. It differs by about ten
+per cent: freezing the lag entirely and differentiating the truncated iteration
+bracket the true sensitivity from opposite sides, which is what says the lag is
+a real part of the state and not a parameter. Coupling only the own-cell term
+keeps the sparsity exactly as it was, and captures nearly all of it, because the
+lag relaxes over far less than a panel — the donor's contribution enters through
+`exp(-1.05 Δs/δ)`, of order a few per cent per cell.
+"""
+function _cell_shear(own, shear, panel, mesh, cache, couple::Bool)
+    couple || return shear
+    return _OverriddenShear(shear, panel,
+        _panel_shear_of(own, shear, panel, mesh, cache))
 end
 
 raw"""
@@ -658,6 +699,13 @@ used.
 - `step_limit`: largest move of any panel's transformed state in one Newton step.
 - `gradient_bound`: cap on the velocity change one cell's gradients imply across
   it, relative to the local edge speed. See `_gradient_rescaling`.
+- `implicit_derivative`: take derivatives through the implicit function theorem
+  rather than by differentiating the iteration. The lagged shear coefficient is
+  held at its converged value when the adjoint is formed, so the sensitivity is
+  that of the frozen-coefficient system; the lag relaxes over far less than a
+  panel, which is why it was lagged in the first place. Set `false` to
+  differentiate the iteration itself, which is slower and tolerance-dependent
+  but exact for the lag.
 - `topology`, `metrics`, `cache`: supply precomputed geometry to avoid rebuilding
   it across a coupling loop or a derivative sweep.
 """
@@ -669,7 +717,7 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         sweeps::Integer = 0,
         outer_iterations::Integer = 25, newton_steps::Integer = 60,
         tolerance::Real = 1e-10, shear_relaxation::Real = 0.5, step_limit::Real = 1.0,
-        initial = nothing)
+        implicit_derivative::Bool = true, initial = nothing)
     rho > 0 || throw(ArgumentError("rho must be positive"))
     sweeps >= 0 || throw(ArgumentError("sweeps must be nonnegative"))
     newton_steps >= 0 || throw(ArgumentError("newton_steps must be nonnegative"))
@@ -679,54 +727,124 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         throw(ArgumentError("shear_relaxation must lie in (0, 1]"))
     step_limit > 0 || throw(ArgumentError("step_limit must be positive"))
 
-    problem = isnothing(cache) ?
-              build_surface_cache(mesh, edge_velocity, kinematic_viscosity; closure,
-        topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound) : cache
+    settings = (; closure, topology, metrics, minimum_edge_speed, weld_tolerance,
+        gradient_bound, sweeps, outer_iterations, newton_steps, tolerance,
+        shear_relaxation, step_limit, initial)
+
+    if !implicit_derivative
+        problem = isnothing(cache) ?
+                  build_surface_cache(mesh, edge_velocity, kinematic_viscosity;
+            closure, topology, metrics, minimum_edge_speed, weld_tolerance,
+            gradient_bound) : cache
+        solution = _converge_states(mesh, problem, kinematic_viscosity, settings)
+        return assemble_surface_result(mesh, problem, solution, rho, reference)
+    end
+
+    # The converged state satisfies R(y, x) = 0, so its derivative comes from
+    # the implicit function theorem rather than from differentiating the
+    # iteration. That makes the sensitivity independent of how many Newton
+    # steps were taken and of the tolerance, and costs one back-substitution per
+    # seed against one full solve per seed. The Jacobian the adjoint needs is
+    # the one Newton already assembles, so the two are the same piece of work.
+    lagged = Ref{Any}(nothing)
+    diagnostics = Ref{Any}(nothing)
+    shape = size(edge_velocity)
+
+    function converge(inputs, _)
+        velocity = reshape(inputs, shape)
+        problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
+            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+        solution = _converge_states(mesh, problem, kinematic_viscosity, settings)
+        # Called once, with the primal inputs. Keeping the lagged shear and the
+        # diagnostics from that call is what lets the residual below be a
+        # function of the state alone.
+        lagged[] = solution.shear_coefficient
+        diagnostics[] = solution
+        return vec(solution.states)
+    end
+
+    function residual_of(unknowns, inputs, _)
+        velocity = reshape(inputs, shape)
+        problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
+            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+        return global_residual(reshape(unknowns, 3, mesh.nfaces), mesh, problem,
+            inflow_states(mesh, problem), lagged[]; couple_shear = true)
+    end
+
+    function jacobian_of(_, unknowns, inputs, _)
+        velocity = reshape(inputs, shape)
+        problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
+            topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+        return assemble_jacobian(reshape(unknowns, 3, mesh.nfaces), mesh, problem,
+            inflow_states(mesh, problem), lagged[]; couple_shear = true)
+    end
+
+    converged = ImplicitAD.implicit(converge, residual_of, vec(edge_velocity);
+        drdy = jacobian_of, lsolve = (matrix, right) -> lu(matrix) \ right)
+
+    problem = build_surface_cache(mesh, edge_velocity, kinematic_viscosity; closure,
+        topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound)
+    reported = diagnostics[]
+    # Promoting the frozen lag to the state's element type gives it zero
+    # partials, which is precisely the frozen-coefficient sensitivity described
+    # above rather than an accident of the container being homogeneous.
+    element = eltype(converged)
+    solution = SurfaceBoundaryLayerSolution(reshape(converged, 3, mesh.nfaces),
+        convert(Vector{element}, lagged[]), convert(element, reported.residual_norm),
+        reported.sweeps, reported.newton_steps, reported.converged)
+    return assemble_surface_result(mesh, problem, solution, rho, reference)
+end
+
+# The iteration itself, on whatever number type it is handed. Split out so that
+# the differentiated interface above can run it once on primal values.
+function _converge_states(mesh::Mesh, problem::SurfaceBoundaryLayerCache,
+        kinematic_viscosity, settings)
     order = flow_ordering(problem)
     inflow = inflow_states(mesh, problem)
     # A warm start may arrive as plain numbers while this solve carries dual
     # numbers, which is exactly what happens when a coupling loop reuses the
     # base state to seed a differentiated one, so promote rather than copy.
-    states = if isnothing(initial)
+    states = if isnothing(settings.initial)
         initial_states(mesh, problem, order, inflow)
     else
-        size(initial) == (3, mesh.nfaces) || throw(DimensionMismatch(
+        size(settings.initial) == (3, mesh.nfaces) || throw(DimensionMismatch(
             "initial must have size (3, mesh.nfaces)"))
-        convert(Matrix{promote_type(eltype(initial), eltype(problem.speed))}, initial)
+        convert(Matrix{promote_type(eltype(settings.initial), eltype(problem.speed))},
+            settings.initial)
     end
 
     scale = _residual_scale(mesh, problem)
     weights = _residual_weights(mesh)
     shear = _lagged_shear(states, mesh, problem, order)
     completed_sweeps = 0
-    for _ in 1:sweeps
+    for _ in 1:settings.sweeps
         for panel in order
             _relax_panel!(states, panel, mesh, problem, inflow, shear)
             shear[panel] = _panel_shear(states, shear, panel, mesh, problem)
         end
         completed_sweeps += 1
         _weighted_norm(global_residual(states, mesh, problem, inflow, shear),
-            weights) / scale < tolerance && break
+            weights) / scale < settings.tolerance && break
     end
 
     completed_newton = 0
     residual = global_residual(states, mesh, problem, inflow, shear)
-    for _ in 1:outer_iterations
+    for _ in 1:settings.outer_iterations
         completed_newton += _newton_solve!(states, residual, mesh, problem, inflow,
-            shear, closure, scale, tolerance, newton_steps, step_limit, weights)
+            shear, settings.closure, scale, settings.tolerance, settings.newton_steps,
+            settings.step_limit, weights)
         refreshed = _lagged_shear(states, mesh, problem, order)
         drift = maximum(abs, refreshed .- shear) /
                 max(maximum(abs, refreshed), eps(Float64))
-        @. shear = shear + shear_relaxation * (refreshed - shear)
+        @. shear = shear + settings.shear_relaxation * (refreshed - shear)
         residual = global_residual(states, mesh, problem, inflow, shear)
-        _weighted_norm(residual, weights) / scale < tolerance && drift < tolerance &&
-            break
+        _weighted_norm(residual, weights) / scale < settings.tolerance &&
+            drift < settings.tolerance && break
     end
 
     residual_norm = _weighted_norm(residual, weights) / scale
-    solution = SurfaceBoundaryLayerSolution(states, shear, residual_norm,
-        completed_sweeps, completed_newton, residual_norm < tolerance)
-    return assemble_surface_result(mesh, problem, solution, rho, reference)
+    return SurfaceBoundaryLayerSolution(states, shear, residual_norm,
+        completed_sweeps, completed_newton, residual_norm < settings.tolerance)
 end
 
 # Damped Newton on the flux residual with the shear coefficient held fixed, so
@@ -863,9 +981,34 @@ end
 # goes. Solving a cell against one shear field and then measuring its residual
 # against another is not a fixed point of anything, and it costs the sweep its
 # march-like behaviour.
+raw"""
+    _OverriddenShear(base, index, value)
+
+The lagged shear field with one entry replaced.
+
+Used to give a panel's own shear coefficient a derivative with respect to its
+own state while leaving its donors' frozen. Lazy because the alternative —
+copying the whole field once per panel — is quadratic in the panel count.
+"""
+struct _OverriddenShear{V, T} <: AbstractVector{T}
+    base::V
+    index::Int
+    value::T
+end
+
+Base.size(shear::_OverriddenShear) = size(shear.base)
+Base.@propagate_inbounds function Base.getindex(shear::_OverriddenShear, index::Int)
+    return index == shear.index ? shear.value :
+           convert(typeof(shear.value), shear.base[index])
+end
+
 function _panel_shear(states, shear, panel, mesh, cache)
-    element_type = eltype(states)
-    own = SVector{3}(@view states[:, panel])
+    return _panel_shear_of(SVector{3}(@view states[:, panel]), shear, panel, mesh,
+        cache)
+end
+
+function _panel_shear_of(own, shear, panel, mesh, cache)
+    element_type = eltype(own)
     state = panel_fluxes(own, cache.speed[panel], cache.cosine[panel],
         cache.sine[panel], zero(element_type), cache.viscosity, cache.closure)
     upstream = zero(element_type)
