@@ -321,10 +321,29 @@ result should not be trusted as a whole-body answer.
 """
 function attached_flow_domain(mesh::Mesh, edge_velocity::AbstractMatrix,
         kinematic_viscosity::Real; topology = nothing, metrics = nothing,
-        minimum_retained::Real = 0.5, closure = ThreeDimensionalClosure(), kwargs...)
+        minimum_retained::Real = 0.5, closure = ThreeDimensionalClosure(),
+        curvature_limit::Real = 0.5, kwargs...)
     surface = isnothing(topology) ? build_surface_topology(mesh) : topology
     geometry = isnothing(metrics) ? build_surface_metrics(mesh, surface) : metrics
     active = fill(true, mesh.nfaces)
+
+    # Thin-layer validity first. Everything the integral equations assume rests
+    # on the layer being thin against the local radius of curvature, and where
+    # that fails the equations are the wrong ones rather than merely hard to
+    # solve. Tanaka calls the ordinary formulation "first-level boundary layer
+    # theory", notes that local curvatures are not in it, and that where the
+    # radius is small "the basic governing equations become different from the
+    # ordinary ones" — a thick boundary layer problem compared with the local
+    # radius of curvature.
+    if curvature_limit > 0
+        thickness = _estimated_thickness(mesh, surface, geometry, edge_velocity,
+            kinematic_viscosity, closure)
+        for panel in 1:mesh.nfaces
+            thickness[panel] * surface_curvature(mesh, surface, panel) >
+            curvature_limit || continue
+            active[panel] = false
+        end
+    end
     for _ in 1:(mesh.nfaces)
         cache = build_surface_cache(mesh, edge_velocity, kinematic_viscosity;
             topology = surface, metrics = geometry, active, closure, kwargs...)
@@ -352,6 +371,50 @@ function attached_flow_domain(mesh::Mesh, edge_velocity::AbstractMatrix,
         "$(round(100 * retained, digits = 1))% of the wetted area; the integral " *
         "boundary layer separates over most of this hull"
     return active, retained
+end
+
+raw"""
+    surface_curvature(mesh, topology, panel)
+
+Largest rate of change of the surface normal across a panel's interior edges,
+an estimate of the local principal curvature ``\kappa=1/R``.
+
+Taken as a maximum rather than a mean because the thin-layer assumption fails
+as soon as it fails in *any* direction: a bilge is sharply curved girthwise
+while being nearly straight along the hull.
+"""
+function surface_curvature(mesh::Mesh, topology::SurfaceTopology, panel::Integer)
+    largest = zero(eltype(mesh.centers))
+    for side in 1:4
+        edge = topology.cell_edges[panel, side]
+        edge == 0 && continue
+        topology.edge_kind[edge] === :interior || continue
+        other = edge_partner(topology, edge, panel)
+        other == 0 && continue
+        separation = norm(@view(mesh.centers[other, :]) .-
+                          @view(mesh.centers[panel, :]))
+        separation > 0 || continue
+        turn = norm(@view(mesh.normals[other, :]) .- @view(mesh.normals[panel, :]))
+        largest = max(largest, turn / separation)
+    end
+    return largest
+end
+
+# Boundary-layer thickness estimated from the flat-plate correlation at each
+# panel's arclength, so the validity test needs no solve and cannot depend on
+# one that failed.
+function _estimated_thickness(mesh, topology, metrics, edge_velocity,
+        kinematic_viscosity, closure)
+    cache = build_surface_cache(mesh, edge_velocity, kinematic_viscosity; closure,
+        topology, metrics)
+    order = flow_ordering(cache)
+    states = initial_states(mesh, cache, order, inflow_states(mesh, cache))
+    thickness = zeros(eltype(cache.speed), mesh.nfaces)
+    for panel in 1:mesh.nfaces
+        momentum, shape, _ = unpack_state(SVector{3}(@view states[:, panel]), closure)
+        thickness[panel] = layer_thickness(momentum, shape)
+    end
+    return thickness
 end
 
 raw"""
@@ -708,7 +771,11 @@ function flow_ordering(cache::SurfaceBoundaryLayerCache)
     for edge in 1:topology.nedges
         topology.edge_kind[edge] === :interior || continue
         donor = cache.edge_donor[edge]
+        # An interior edge onto a deactivated panel is a domain boundary and
+        # carries a prescribed inflow, so it orders nothing.
+        donor == 0 && continue
         receiver = edge_partner(topology, edge, donor)
+        (receiver == 0 || !cache.active[receiver]) && continue
         # Every edge whose donor is the other cell, whether or not it carries
         # flux. This must be the residual's dependency graph exactly: a
         # zero-flux edge still supplies a donor state, and its flux still has a
