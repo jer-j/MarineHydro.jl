@@ -86,6 +86,12 @@ export viscous_maneuvering_correction, apply_viscous_correction
 export separation_stern_mask
 export nondimensionalize_viscous_derivatives
 
+include("surface_topology.jl")
+export SurfaceTopology, SurfaceMetrics
+export weld_vertices, build_surface_topology, build_surface_metrics
+export boundary_edges, interior_edges, connected_components
+export edge_normal_for, edge_area_vector_for
+
 include("three_dimensional_boundary_layer.jl")
 export ThreeDimensionalClosure, ThreeDimensionalBoundaryLayerResult
 export SurfaceMarchTopology, build_march_topology, girth_ordering

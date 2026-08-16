@@ -3,6 +3,7 @@ using Test
 @testset "MarineHydro.jl test suite" begin
     include("./benchmark_meshes.jl")
     include("./maneuvering.jl")
+    include("./surface_topology.jl")
     include("./boundary_layers.jl")
     include("./three_dimensional_boundary_layer.jl")
     include("./maneuvering_validation.jl")
