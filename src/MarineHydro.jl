@@ -96,6 +96,7 @@ export SurfaceBoundaryLayerCache, SurfaceBoundaryLayerSolution
 export build_surface_cache, solve_surface_boundary_layer
 export flow_ordering, inflow_states, initial_states
 export cell_residual, global_residual, assemble_jacobian
+export attached_flow_domain
 export rotation_into, edge_partner, edge_flux_contribution
 
 # After the surface solver: `viscous_maneuvering_correction` dispatches on the

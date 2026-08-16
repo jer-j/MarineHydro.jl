@@ -289,6 +289,72 @@ function _outward_speed(metrics, edge, owner, topology, speed, cosine, sine)
 end
 
 raw"""
+    attached_flow_domain(mesh, edge_velocity, kinematic_viscosity; kwargs...)
+
+The largest part of the surface on which the boundary-layer equations have an
+outlet, as a per-panel mask for the `active` keyword.
+
+A closed double body has none globally: every finite acyclic upwind graph has a
+sink, and on KVLCC2 that sink is a cell at the stern which takes flux from all
+four sides and donates to none. Its own state enters its own residual only
+through the source term, of order ``c_f/2``, while it must absorb the whole
+defect arriving from upstream — its equation has no solution, and a global line
+search lets it stall the entire hull.
+
+That cell is not a discretisation artifact. The surface streamlines genuinely
+converge there and the fluid leaves the surface, which is three-dimensional
+separation. Tanaka is explicit that first-order integral methods do not apply
+near the stern end of a full-form ship, where the boundary layer becomes thick
+and bilge vortices form by exactly this mechanism, and that the loads there need
+a separately modelled longitudinal vortex superposed on the layer. So the right
+response is to stop the integral calculation where its assumptions fail, not to
+force a solution out of it.
+
+Cells without an outlet are removed and the donors recomputed, repeatedly. That
+terminates quickly, because removing a sink turns its edges into domain
+boundaries and so hands the cells that fed it an outflow of their own. What is
+left is a domain on which every cell can discharge.
+
+Returns the mask and the fraction of wetted area retained. A retained fraction
+far below one says the flow separates over much of the hull and the integral
+result should not be trusted as a whole-body answer.
+"""
+function attached_flow_domain(mesh::Mesh, edge_velocity::AbstractMatrix,
+        kinematic_viscosity::Real; topology = nothing, metrics = nothing,
+        minimum_retained::Real = 0.5, closure = ThreeDimensionalClosure(), kwargs...)
+    surface = isnothing(topology) ? build_surface_topology(mesh) : topology
+    geometry = isnothing(metrics) ? build_surface_metrics(mesh, surface) : metrics
+    active = fill(true, mesh.nfaces)
+    for _ in 1:(mesh.nfaces)
+        cache = build_surface_cache(mesh, edge_velocity, kinematic_viscosity;
+            topology = surface, metrics = geometry, active, closure, kwargs...)
+        removed = 0
+        for panel in 1:mesh.nfaces
+            active[panel] || continue
+            outlet = false
+            for side in 1:4
+                edge = surface.cell_edges[panel, side]
+                edge == 0 && continue
+                if cache.edge_donor[edge] == panel
+                    outlet = true
+                    break
+                end
+            end
+            outlet && continue
+            active[panel] = false
+            removed += 1
+        end
+        removed == 0 && break
+    end
+
+    retained = sum(mesh.areas[active]) / sum(mesh.areas)
+    retained >= minimum_retained || @warn "attached_flow_domain retained only " *
+        "$(round(100 * retained, digits = 1))% of the wetted area; the integral " *
+        "boundary layer separates over most of this hull"
+    return active, retained
+end
+
+raw"""
     edge_flux_contribution(donor_state, edge, panel, cache)
 
 Flux of the three conserved quantities through `edge` into `panel`, already
