@@ -6,6 +6,7 @@ using Test
     include("./surface_topology.jl")
     include("./surface_boundary_layer.jl")
     include("./mesh_deformation.jl")
+    include("./crossflow_drag.jl")
     include("./virtual_captive_tests.jl")
     include("./boundary_layers.jl")
     include("./three_dimensional_boundary_layer.jl")

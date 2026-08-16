@@ -97,7 +97,7 @@ function virtual_captive_test(grid::StructuredPanelGrid, surge_gradient, sway_gr
         closure = HeadTurbulentClosure(),
         green_functions = (Rankine(), RankineReflected()),
         minimum_edge_speed = nothing, integration_substeps::Integer = 8,
-        stop_at_separation::Bool = true)
+        stop_at_separation::Bool = true, crossflow_drag_coefficient::Real = 0)
     mesh = grid.mesh
     forward_speed > 0 || throw(ArgumentError("forward_speed must be positive"))
     kinematic_viscosity > 0 ||
@@ -133,8 +133,20 @@ function virtual_captive_test(grid::StructuredPanelGrid, surge_gradient, sway_gr
                          dot(@view(gradient[:, 1]), mesh.normals[:, 2] .* weight)
         pressure_moment = -rho * forward_speed *
                           dot(@view(gradient[:, 1]), yaw_mode .* weight)
+        # Cross-flow drag on whatever the layer says has separated. Off by
+        # default because it is a model with a published constant rather than a
+        # solved quantity, and mixing it in silently would make the rest of the
+        # result harder to read.
+        shed = if crossflow_drag_coefficient > 0
+            crossflow_drag_loads(grid, collect(Bool, layer.separated),
+                sway_velocity, yaw_rate; rho,
+                drag_coefficient = crossflow_drag_coefficient, x_reference)
+        else
+            (force = zero(pressure_force), moment = zero(pressure_moment))
+        end
         return VirtualCaptiveRun(promote(sway_velocity, yaw_rate,
-            layer.force[2] + pressure_force, layer.moment[3] + pressure_moment,
+            layer.force[2] + pressure_force + shed.force,
+            layer.moment[3] + pressure_moment + shed.moment,
             layer.force[2], layer.moment[3])...,
             count(layer.separated), _layer_converged(layer))
     end

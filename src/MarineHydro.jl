@@ -115,6 +115,9 @@ export nondimensionalize_viscous_derivatives
 include("mesh_deformation.jl")
 export deform_mesh, beam_deformation_basis
 
+include("crossflow_drag.jl")
+export SectionalCrossflowDrag, sectional_crossflow_geometry, crossflow_drag_loads
+
 include("virtual_captive_tests.jl")
 export VirtualCaptiveRun, VirtualCaptiveTest
 export virtual_captive_test, fit_captive_coefficients
