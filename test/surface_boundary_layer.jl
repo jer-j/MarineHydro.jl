@@ -1,3 +1,5 @@
+import FiniteDifferences
+
 using LinearAlgebra
 using MarineHydro
 using Test
@@ -169,6 +171,65 @@ end
         end
         @test all(ratio -> isapprox(ratio, 1.0; rtol = 0.10), results)
         @test results[1]≈results[2] rtol=0.05
+    end
+
+    @testset "Interior fluxes telescope" begin
+        # Summed over the whole surface, every interior edge must cancel
+        # against itself: the two cells see opposite area vectors and take the
+        # same donor state. What is left is the boundary flux alone. This is
+        # what the winding-based edge area vectors and the
+        # `F_ji = -Q_ij F_ij` construction of `SurfaceMetrics` buy, and it is
+        # the discrete statement that the scheme conserves.
+        mesh = square_plate_mesh(; side, cells = 10)
+        angle = deg2rad(35)
+        edge_velocity = zeros(mesh.nfaces, 3)
+        edge_velocity[:, 1] .= speed * cos(angle)
+        edge_velocity[:, 2] .= speed * sin(angle)
+        cache = MarineHydro.build_surface_cache(mesh, edge_velocity, viscosity)
+        order = flow_ordering(cache)
+        inflow = inflow_states(mesh, cache)
+        states = initial_states(mesh, cache, order, inflow)
+        shear = MarineHydro._lagged_shear(states, mesh, cache, order)
+
+        total = zeros(3)
+        boundary = zeros(3)
+        for panel in 1:mesh.nfaces, side_index in 1:4
+            edge = cache.topology.cell_edges[panel, side_index]
+            edge == 0 && continue
+            donors = MarineHydro._donor_states(states, panel, cache, inflow)
+            flux = edge_flux_contribution(donors[side_index], edge, panel, cache,
+                shear)
+            total .+= collect(flux)
+            cache.topology.edge_kind[edge] === :interior ||
+                (boundary .+= collect(flux))
+        end
+        @test norm(total - boundary) < 1e-12 * max(norm(boundary), 1.0)
+        @test norm(boundary) > 1e-6
+    end
+
+    @testset "Jacobian matches finite differences" begin
+        # The hand-assembled sparsity is the upwind adjacency graph. If a donor
+        # were missed the matrix would still factorise and Newton would still
+        # descend, just slowly and to the wrong linearisation, so this compares
+        # every entry against a central difference of the same residual.
+        mesh = square_plate_mesh(; side = 1.0, cells = 5)
+        angle = deg2rad(25)
+        edge_velocity = zeros(mesh.nfaces, 3)
+        edge_velocity[:, 1] .= speed * cos(angle)
+        edge_velocity[:, 2] .= speed * sin(angle)
+        cache = MarineHydro.build_surface_cache(mesh, edge_velocity, viscosity)
+        order = flow_ordering(cache)
+        inflow = inflow_states(mesh, cache)
+        states = initial_states(mesh, cache, order, inflow)
+        shear = MarineHydro._lagged_shear(states, mesh, cache, order)
+
+        analytic = Matrix(assemble_jacobian(states, mesh, cache, inflow, shear))
+        flat(vector) = global_residual(reshape(vector, 3, mesh.nfaces), mesh, cache,
+            inflow, shear)
+        numeric = FiniteDifferences.jacobian(FiniteDifferences.central_fdm(5, 1),
+            flat, vec(states))[1]
+        @test size(analytic) == size(numeric)
+        @test norm(analytic - numeric) < 1e-6 * norm(numeric)
     end
 
     @testset "Argument validation" begin
