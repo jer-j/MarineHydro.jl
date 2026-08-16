@@ -30,6 +30,7 @@ struct SurfaceBoundaryLayerCache{TP, TM, T, C}
     edge_influx::Vector{T}
     active::Vector{Bool}
     diffusion::T
+    upwind_smoothing::T
     reference_speed::T
     viscosity::T
     closure::C
@@ -77,7 +78,7 @@ function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
         kinematic_viscosity::Real; closure = ThreeDimensionalClosure(),
         topology = nothing, metrics = nothing, minimum_edge_speed = nothing,
         weld_tolerance = nothing, gradient_bound::Real = 1.0, active = nothing,
-        diffusion::Real = 0.0)
+        diffusion::Real = 0.0, upwind_smoothing::Real = 0.0)
     size(edge_velocity) == (mesh.nfaces, 3) || throw(DimensionMismatch(
         "edge_velocity must have size (mesh.nfaces, 3)"))
     kinematic_viscosity > 0 ||
@@ -125,7 +126,7 @@ function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
 
     return SurfaceBoundaryLayerCache(surface, geometry, speed, cosine, sine,
         gradients, donor, influx, solved, convert(element_type, diffusion),
-        convert(element_type, largest), convert(element_type, kinematic_viscosity),
+        convert(element_type, upwind_smoothing), convert(element_type, largest), convert(element_type, kinematic_viscosity),
         closure)
 end
 
@@ -301,25 +302,77 @@ plausible but wrong answer, which is why the test suite checks invariance under
 a rigid rotation of the whole problem.
 """
 function edge_flux_contribution(donor_state, edge::Integer, panel::Integer,
-        cache::SurfaceBoundaryLayerCache, shear)
+        cache::SurfaceBoundaryLayerCache, shear, opposite_state = nothing)
     donor = cache.edge_donor[edge]
     # An inflow boundary edge carries the prescribed state, evaluated in the
     # receiving panel's own frame.
     source_panel = donor == 0 ? panel : donor
-    state = panel_fluxes(donor_state, cache.speed[source_panel],
-        cache.cosine[source_panel], cache.sine[source_panel],
-        shear[source_panel], cache.viscosity, cache.closure)
-    momentum = state.momentum
-    energy = state.energy
-    if donor != panel && donor != 0
-        rotation = rotation_into(cache.topology, cache.metrics, edge, panel)
-        momentum = rotation * momentum * transpose(rotation)
-        energy = rotation * energy
+    momentum, energy = _edge_defects(donor_state, source_panel, edge, panel, cache,
+        shear)
+    weight = _upwind_weight(cache, edge, panel)
+    if weight < 1 && !isnothing(opposite_state)
+        # Blend in the other side. See `_upwind_weight`.
+        other = edge_partner(cache.topology, edge, source_panel)
+        other = other == 0 ? panel : other
+        opposite_momentum, opposite_energy = _edge_defects(opposite_state, other, edge,
+            panel, cache, shear)
+        momentum = weight * momentum + (1 - weight) * opposite_momentum
+        energy = weight * energy + (1 - weight) * opposite_energy
     end
     area_vector = edge_area_vector_for(cache.topology, cache.metrics, edge, panel)
     normal = @SVector [area_vector[1], area_vector[2]]
     transported = momentum * normal
     return @SVector [transported[1], transported[2], dot(energy, normal)]
+end
+
+# Momentum and energy defect of `source_panel`, rotated into `panel`'s basis.
+function _edge_defects(state_vector, source_panel, edge, panel, cache, shear)
+    state = panel_fluxes(state_vector, cache.speed[source_panel],
+        cache.cosine[source_panel], cache.sine[source_panel], shear[source_panel],
+        cache.viscosity, cache.closure)
+    momentum = state.momentum
+    energy = state.energy
+    if source_panel != panel
+        rotation = rotation_into(cache.topology, cache.metrics, edge, panel)
+        momentum = rotation * momentum * transpose(rotation)
+        energy = rotation * energy
+    end
+    return momentum, energy
+end
+
+raw"""
+    _upwind_weight(cache, edge, panel)
+
+Share of an edge flux taken from the upwind side, going smoothly to one half as
+the flow becomes parallel to the edge.
+
+```math
+w=\tfrac12\left[1+\tanh\!\left(\frac{|q\cdot m|}{\epsilon_u\,q\,\ell}\right)\right]
+```
+
+A hard upwind switch is a discrete function of the external velocity, so a
+Newton method cannot see that moving the external flow would flip it. That is
+fatal in a strongly coupled solve at precisely the place it matters: a
+convergence line is where ``q\cdot m\to0`` and the switch is degenerate. With
+`upwind_smoothing` at zero this returns one and the scheme is the plain
+first-order upwind it was; positive values recover a central average exactly
+where the flow runs along an edge, which is the same weakly-elliptic behaviour
+Drela obtains from added diffusion, and which is what lets information cross a
+convergence line.
+
+It also removes a discrete branch from the map, which is what mesh sensitivities
+need.
+"""
+function _upwind_weight(cache::SurfaceBoundaryLayerCache, edge::Integer,
+        panel::Integer)
+    smoothing = cache.upwind_smoothing
+    smoothing > 0 || return one(smoothing)
+    area_vector = edge_area_vector_for(cache.topology, cache.metrics, edge, panel)
+    length_scale = max(hypot(area_vector[1], area_vector[2]), eps(Float64))
+    flux = abs(cache.speed[panel] * (cache.cosine[panel] * area_vector[1] +
+                cache.sine[panel] * area_vector[2]))
+    return (one(smoothing) +
+            tanh(flux / (smoothing * cache.speed[panel] * length_scale))) / 2
 end
 
 raw"""
@@ -341,9 +394,10 @@ function cell_residual(own_state, donor_states, panel::Integer, mesh::Mesh,
     for side in 1:4
         edge = cache.topology.cell_edges[panel, side]
         edge == 0 && continue
+        opposite = isnothing(neighbour_states) ? nothing : neighbour_states[side]
         flux_sum = flux_sum +
                    edge_flux_contribution(donor_states[side], edge, panel, cache,
-            shear)
+            shear, opposite)
     end
     if !isnothing(neighbour_states)
         flux_sum = flux_sum + _diffusive_flux(own_state, neighbour_states, panel,
@@ -416,6 +470,11 @@ function _diffusive_flux(own_state, neighbour_states, panel::Integer, mesh::Mesh
     end
     return total
 end
+
+# Both the smoothed upwind blend and the diffusion term read the panel across
+# each side, not just the donor.
+_needs_neighbours(cache::SurfaceBoundaryLayerCache) =
+    cache.diffusion > 0 || cache.upwind_smoothing > 0
 
 topology_of(cache::SurfaceBoundaryLayerCache) = cache.topology
 
@@ -755,7 +814,7 @@ function assemble_jacobian(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
         end
         donors = _donor_states(states, panel, cache, inflow)
         own = SVector{3}(@view states[:, panel])
-        diffusive = cache.diffusion > 0
+        diffusive = _needs_neighbours(cache)
         neighbours = diffusive ? _neighbour_states(states, panel, cache) : nothing
         # Diagonal block: the source term, any edge whose donor is this panel,
         # and — when the diffusion term is on — its own side of every symmetric
@@ -847,7 +906,7 @@ function global_residual(states, mesh::Mesh, cache::SurfaceBoundaryLayerCache,
         local_residual = if cache.active[panel]
             cell_residual(own, _donor_states(states, panel, cache, inflow), panel,
                 mesh, cache, _cell_shear(own, shear, panel, mesh, cache, couple_shear),
-                cache.diffusion > 0 ? _neighbour_states(states, panel, cache) : nothing)
+                _needs_neighbours(cache) ? _neighbour_states(states, panel, cache) : nothing)
         else
             zero(SVector{3, element})
         end
@@ -951,7 +1010,7 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         outer_iterations::Integer = 25, newton_steps::Integer = 60,
         tolerance::Real = 1e-10, shear_relaxation::Real = 0.5, step_limit::Real = 1.0,
         implicit_derivative::Bool = true, active = nothing, diffusion::Real = 0.0,
-        initial = nothing)
+        upwind_smoothing::Real = 0.0, initial = nothing)
     rho > 0 || throw(ArgumentError("rho must be positive"))
     sweeps >= 0 || throw(ArgumentError("sweeps must be nonnegative"))
     newton_steps >= 0 || throw(ArgumentError("newton_steps must be nonnegative"))
@@ -988,7 +1047,7 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         velocity = reshape(inputs, shape)
         problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
             topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
-        active, diffusion)
+        active, diffusion, upwind_smoothing)
         solution = _converge_states(mesh, problem, kinematic_viscosity, settings)
         # Called once, with the primal inputs. Keeping the lagged shear and the
         # diagnostics from that call is what lets the residual below be a
@@ -1002,7 +1061,7 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         velocity = reshape(inputs, shape)
         problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
             topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
-        active, diffusion)
+        active, diffusion, upwind_smoothing)
         return global_residual(reshape(unknowns, 3, mesh.nfaces), mesh, problem,
             inflow_states(mesh, problem), lagged[]; couple_shear = true)
     end
@@ -1011,7 +1070,7 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
         velocity = reshape(inputs, shape)
         problem = build_surface_cache(mesh, velocity, kinematic_viscosity; closure,
             topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
-        active, diffusion)
+        active, diffusion, upwind_smoothing)
         return assemble_jacobian(reshape(unknowns, 3, mesh.nfaces), mesh, problem,
             inflow_states(mesh, problem), lagged[]; couple_shear = true)
     end
@@ -1021,7 +1080,7 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
 
     problem = build_surface_cache(mesh, edge_velocity, kinematic_viscosity; closure,
         topology, metrics, minimum_edge_speed, weld_tolerance, gradient_bound,
-        active, diffusion)
+        active, diffusion, upwind_smoothing)
     reported = diagnostics[]
     # Promoting the frozen lag to the state's element type gives it zero
     # partials, which is precisely the frozen-coefficient sensitivity described

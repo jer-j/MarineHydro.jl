@@ -112,6 +112,10 @@ export viscous_maneuvering_correction, apply_viscous_correction
 export separation_stern_mask
 export nondimensionalize_viscous_derivatives
 
+include("simultaneous_coupling.jl")
+export SimultaneousCouplingResult, solve_simultaneous_coupling
+export indirect_gradient_operator
+
 include("mesh_deformation.jl")
 export deform_mesh, beam_deformation_basis
 
