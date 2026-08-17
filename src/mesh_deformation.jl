@@ -37,35 +37,40 @@ function deform_mesh(mesh::Mesh, displacement::AbstractMatrix)
         "displacement must have size $(size(mesh.vertices))",
     ))
     vertices = mesh.vertices .+ displacement
-    element_type = eltype(vertices)
-    centers = Matrix{element_type}(undef, mesh.nfaces, 3)
-    normals = Matrix{element_type}(undef, mesh.nfaces, 3)
-    areas = Vector{element_type}(undef, mesh.nfaces)
-    radii = Vector{element_type}(undef, mesh.nfaces)
-    corners = Matrix{element_type}(undef, 4, 3)
-    for panel in 1:mesh.nfaces
-        for corner in 1:4
-            # Face indices are stored zero-based, as the importers write them.
-            vertex = mesh.faces[panel, corner] + 1
-            for axis in 1:3
-                corners[corner, axis] = vertices[vertex, axis]
-            end
-        end
-        geometry = _quad_geometry(corners)
-        if isnothing(geometry)
-            centers[panel, :] .= @view mesh.centers[panel, :]
-            normals[panel, :] .= @view mesh.normals[panel, :]
-            areas[panel] = mesh.areas[panel]
-            radii[panel] = mesh.radii[panel]
-            continue
-        end
-        centers[panel, :] .= geometry.center
-        normals[panel, :] .= geometry.normal
-        areas[panel] = geometry.area
-        radii[panel] = geometry.radius
+
+    # Built without writing into preallocated arrays, so that this is
+    # differentiable in REVERSE mode as well as forward. Reverse mode is the
+    # useful direction for shape work — one adjoint pass gives the derivative
+    # with respect to every vertex at once, where forward mode costs a pass per
+    # variable — and it is the mode the published solver is built around.
+    # Zygote cannot see through `setindex!`, so nothing here may mutate.
+    panels = map(1:mesh.nfaces) do panel
+        geometry = _quad_geometry(_panel_corners(vertices, mesh.faces, panel))
+        isnothing(geometry) &&
+            return (center = collect(@view mesh.centers[panel, :]),
+                normal = collect(@view mesh.normals[panel, :]),
+                area = mesh.areas[panel], radius = mesh.radii[panel])
+        return (center = geometry.center, normal = geometry.normal,
+            area = geometry.area, radius = geometry.radius)
     end
+
+    centers = permutedims(reduce(hcat, map(panel -> panel.center, panels)))
+    normals = permutedims(reduce(hcat, map(panel -> panel.normal, panels)))
+    areas = map(panel -> panel.area, panels)
+    radii = map(panel -> panel.radius, panels)
     return Mesh(vertices, mesh.faces, centers, normals, areas, radii,
         mesh.nvertices, mesh.nfaces)
+end
+
+# The four corners of a panel as a 4x3 matrix. Written with four explicit rows
+# rather than a comprehension because Zygote has no adjoint for splatting a
+# generator into `vcat`.
+function _panel_corners(vertices, faces, panel::Integer)
+    # Face indices are stored zero-based, as the importers write them.
+    return vcat(transpose(@view vertices[faces[panel, 1] + 1, :]),
+        transpose(@view vertices[faces[panel, 2] + 1, :]),
+        transpose(@view vertices[faces[panel, 3] + 1, :]),
+        transpose(@view vertices[faces[panel, 4] + 1, :]))
 end
 
 deform_mesh(mesh::Mesh, basis::AbstractMatrix, amplitude::Real) =

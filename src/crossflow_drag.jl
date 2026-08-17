@@ -32,29 +32,31 @@ function sectional_crossflow_geometry(grid::StructuredPanelGrid,
     stations = minimum(length, grid.strips)
     stations > 1 || throw(ArgumentError("grid needs at least two stations"))
 
-    element_type = eltype(mesh.centers)
-    station_x = zeros(element_type, stations)
-    draft = zeros(element_type, stations)
-    spacing = zeros(element_type, stations)
-    fraction = zeros(element_type, stations)
-    for station in 1:stations
-        panels = [strip[station] for strip in grid.strips if length(strip) >= station]
-        station_x[station] = sum(mesh.centers[panel, 1] for panel in panels) /
-                             length(panels)
-        draft[station] = -minimum(mesh.centers[panel, 3] for panel in panels)
-        fraction[station] = count(panel -> separated[panel], panels) / length(panels)
-    end
+    # Built without writing into preallocated arrays, so that the whole chain
+    # from mesh vertices to sectional loads is differentiable in reverse mode.
+    # Zygote cannot see through `setindex!`, and `sum`/`minimum` over a bare
+    # generator has no adjoint either, so both are avoided here.
+    members = map(station -> [strip[station] for strip in grid.strips
+                              if length(strip) >= station], 1:stations)
+    raw_x = map(panels -> sum(map(panel -> mesh.centers[panel, 1], panels)) /
+                          length(panels), members)
+    raw_draft = map(panels -> -minimum(map(panel -> mesh.centers[panel, 3], panels)),
+        members)
+    raw_fraction = map(panels -> count(panel -> separated[panel], panels) /
+                                 length(panels), members)
 
-    order = sortperm(station_x)
-    station_x = station_x[order]
-    draft = draft[order]
-    fraction = fraction[order]
-    for station in 1:stations
+    order = sortperm(raw_x)
+    station_x = raw_x[order]
+    draft = raw_draft[order]
+    # The separated fraction is a count, so it carries no derivative; promote it
+    # so every field of the result shares one element type.
+    fraction = map(index -> convert(eltype(station_x), raw_fraction[index]), order)
+    spacing = map(1:stations) do station
         lower = station == 1 ? station_x[1] :
                 (station_x[station] + station_x[station - 1]) / 2
         upper = station == stations ? station_x[stations] :
                 (station_x[station] + station_x[station + 1]) / 2
-        spacing[station] = upper - lower
+        upper - lower
     end
     return SectionalCrossflowDrag(station_x, draft, spacing, fraction)
 end

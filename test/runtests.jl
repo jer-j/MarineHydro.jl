@@ -9,6 +9,7 @@ using Test
     include("./crossflow_drag.jl")
     include("./shed_vorticity.jl")
     include("./empirical_derivatives.jl")
+    include("./reverse_mode.jl")
     include("./virtual_captive_tests.jl")
     include("./boundary_layers.jl")
     include("./three_dimensional_boundary_layer.jl")
