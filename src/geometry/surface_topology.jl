@@ -289,18 +289,40 @@ multi-block seam failed to stitch.
 """
 function connected_components(topology::SurfaceTopology)
     nfaces = size(topology.cell_edges, 1)
-    sets = _UnionFind(nfaces)
+    graph = Graphs.SimpleGraph(nfaces)
     for edge in 1:topology.nedges
         topology.edge_kind[edge] === :interior || continue
-        _union!(sets, topology.edge_cells[edge, 1], topology.edge_cells[edge, 2])
+        Graphs.add_edge!(graph, topology.edge_cells[edge, 1],
+            topology.edge_cells[edge, 2])
     end
-    labels = Dict{Int, Int}()
+    groups = Graphs.connected_components(graph)
     components = Vector{Int}(undef, nfaces)
-    for panel in 1:nfaces
-        root = _find(sets, panel)
-        components[panel] = get!(labels, root, length(labels) + 1)
+    for (label, group) in enumerate(groups)
+        for panel in group
+            components[panel] = label
+        end
     end
-    return components, length(labels)
+    return components, length(groups)
+end
+
+raw"""
+    panel_adjacency_graph(topology)
+
+The surface's panel connectivity as a `Graphs.SimpleGraph`, one vertex per
+panel and one edge per interior mesh edge.
+
+Exposed so that the graph questions a hull raises — is the wetted surface one
+piece, which panels are cut off by a domain mask — can be asked with the
+standard tools rather than re-derived here.
+"""
+function panel_adjacency_graph(topology::SurfaceTopology)
+    graph = Graphs.SimpleGraph(size(topology.cell_edges, 1))
+    for edge in 1:topology.nedges
+        topology.edge_kind[edge] === :interior || continue
+        Graphs.add_edge!(graph, topology.edge_cells[edge, 1],
+            topology.edge_cells[edge, 2])
+    end
+    return graph
 end
 
 raw"""

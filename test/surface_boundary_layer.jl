@@ -1,5 +1,6 @@
 import FiniteDifferences
 import ForwardDiff
+import Graphs
 
 using LinearAlgebra
 using MarineHydro
@@ -327,6 +328,35 @@ end
         end
         @test above == 0
         @test maximum(abs, permuted) > 0
+    end
+
+    @testset "Upwind graph, ordering and cycles" begin
+        # The ordering is a topological sort of the residual's dependency graph,
+        # so on a surface whose flow is one-way there must be no cycles at all —
+        # that is what makes the permuted Jacobian block triangular. Reporting
+        # the cycles rather than silently falling back is the point of keeping
+        # this in the library.
+        mesh = square_plate_mesh(; side = 2.0, cells = 10)
+        angle = deg2rad(35)
+        edge_velocity = zeros(mesh.nfaces, 3)
+        edge_velocity[:, 1] .= speed * cos(angle)
+        edge_velocity[:, 2] .= speed * sin(angle)
+        cache = MarineHydro.build_surface_cache(mesh, edge_velocity, viscosity)
+
+        graph = upwind_graph(cache)
+        @test Graphs.nv(graph) == mesh.nfaces
+        @test Graphs.ne(graph) > 0
+        @test isempty(upwind_cycles(cache))
+
+        order = flow_ordering(cache)
+        @test sort(order) == 1:mesh.nfaces
+        # Every dependency must be satisfied before the panel that reads it.
+        place = zeros(Int, mesh.nfaces)
+        for (position, panel) in enumerate(order)
+            place[panel] = position
+        end
+        @test all(place[Graphs.src(e)] < place[Graphs.dst(e)]
+        for e in Graphs.edges(graph))
     end
 
     @testset "Argument validation" begin

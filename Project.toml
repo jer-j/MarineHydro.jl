@@ -9,6 +9,7 @@ DifferentiationInterface = "a0c0ee7d-e4b9-4e03-894e-1c5f64a51d63"
 DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
 FiniteDifferences = "26cc04aa-876d-5657-8c51-4c34ba976000"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
 ImplicitAD = "e7cbb90b-9b31-4eb2-a8c8-45099c074ee1"
 Integrals = "de52edbc-65ea-441a-8357-d3a637375a31"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
@@ -23,6 +24,7 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 
 [compat]
+Graphs = "1.14.0"
 NonlinearSolve = "4.19.1"
 SparseArrays = "1.12.0"
 

@@ -177,11 +177,11 @@ function solve_simultaneous_coupling(grid::StructuredPanelGrid,
     residual = joint_residual(unknowns)
     reference_norm = max(norm(residual), sqrt(eps(Float64)))
     completed = 0
-    linear = Ref{Any}(nothing)
+    linear = nothing
     for _ in 1:newton_steps
         norm(residual) / reference_norm < tolerance && break
         jacobian = ForwardDiff.jacobian(joint_residual, unknowns)
-        step = _newton_step(linear, jacobian, residual)
+        step, linear = _newton_step(linear, jacobian, residual)
         isnothing(step) && break
         accepted = false
         damping = one(eltype(step))

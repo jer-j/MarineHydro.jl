@@ -1,6 +1,7 @@
 module MarineHydro
 
 using DimensionalData
+import Graphs
 using ForwardDiff
 using LinearAlgebra
 using LinearAlgebra: cross, dot, norm
@@ -56,6 +57,7 @@ include("geometry/surface_topology.jl")
 export SurfaceTopology, SurfaceMetrics
 export weld_vertices, build_surface_topology, build_surface_metrics
 export boundary_edges, interior_edges, connected_components
+export panel_adjacency_graph
 export edge_normal_for, edge_area_vector_for
 
 # ---------------------------------------------------------------------------
@@ -122,7 +124,8 @@ export equilibrium_shape_factor, advance_shear_coefficient
 include("boundary_layer/surface_boundary_layer.jl")
 export SurfaceBoundaryLayerCache, SurfaceBoundaryLayerSolution
 export build_surface_cache, solve_surface_boundary_layer
-export flow_ordering, inflow_states, initial_states
+export flow_ordering, upwind_graph, upwind_cycles
+export inflow_states, initial_states
 export cell_residual, global_residual, assemble_jacobian
 export attached_flow_domain, surface_curvature
 export rotation_into, edge_partner, edge_flux_contribution

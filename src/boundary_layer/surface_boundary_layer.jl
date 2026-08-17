@@ -19,21 +19,25 @@ sparse direct factorisation stops being the obvious answer.
 Returns `nothing` if the solve fails or produces a non-finite step, which the
 caller treats as a stalled iteration rather than an error.
 """
-function _newton_step(cache, jacobian, residual)
-    step = try
-        if isnothing(cache[])
-            problem = LinearSolve.LinearProblem(jacobian, residual)
-            cache[] = LinearSolve.init(problem)
+function _newton_step(linear, jacobian, residual)
+    updated = try
+        if isnothing(linear)
+            LinearSolve.init(LinearSolve.LinearProblem(jacobian, residual))
         else
-            cache[].A = jacobian
-            cache[].b = residual
+            linear.A = jacobian
+            linear.b = residual
+            linear
         end
-        copy(LinearSolve.solve!(cache[]).u)
     catch
-        return nothing
+        return nothing, linear
     end
-    all(isfinite, step) || return nothing
-    return -step
+    step = try
+        copy(LinearSolve.solve!(updated).u)
+    catch
+        return nothing, updated
+    end
+    all(isfinite, step) || return nothing, updated
+    return -step, updated
 end
 
 raw"""
@@ -801,10 +805,37 @@ by emitting the remaining panels in their existing order; the global Newton
 solve that follows does not depend on the ordering being exact.
 """
 function flow_ordering(cache::SurfaceBoundaryLayerCache)
+    graph = upwind_graph(cache)
+    active = cache.active
+    order = try
+        [panel for panel in Graphs.topological_sort(graph) if active[panel]]
+    catch
+        # `topological_sort` throws on a cycle. Recirculation produces one, and
+        # the global Newton solve does not depend on the order being exact, so
+        # fall back to emitting each cyclic group together and in flow order
+        # elsewhere. `upwind_cycles` reports which cells are involved.
+        components = Graphs.strongly_connected_components(graph)
+        condensed = Graphs.condensation(graph, components)
+        collect(Iterators.flatten(components[group]
+        for group in Graphs.topological_sort(condensed)))
+    end
+    return [panel for panel in order if active[panel]]
+end
+
+raw"""
+    upwind_graph(cache)
+
+The dependency graph of the residual: an edge from each donor panel to the panel
+whose residual reads it.
+
+This must match what `cell_residual` actually reads, not what carries flux. An
+edge the flow runs parallel to still supplies a donor state and still has a
+nonzero flux derivative, so omitting it gives an order in which the permuted
+Jacobian is *not* block triangular and a Gauss-Seidel sweep is not a march.
+"""
+function upwind_graph(cache::SurfaceBoundaryLayerCache)
     topology = cache.topology
-    nfaces = size(topology.cell_edges, 1)
-    upstream_count = zeros(Int, nfaces)
-    downstream = [Int[] for _ in 1:nfaces]
+    graph = Graphs.SimpleDiGraph(size(topology.cell_edges, 1))
     for edge in 1:topology.nedges
         topology.edge_kind[edge] === :interior || continue
         donor = cache.edge_donor[edge]
@@ -813,33 +844,27 @@ function flow_ordering(cache::SurfaceBoundaryLayerCache)
         donor == 0 && continue
         receiver = edge_partner(topology, edge, donor)
         (receiver == 0 || !cache.active[receiver]) && continue
-        # Every edge whose donor is the other cell, whether or not it carries
-        # flux. This must be the residual's dependency graph exactly: a
-        # zero-flux edge still supplies a donor state, and its flux still has a
-        # nonzero derivative, so leaving it out gave an order in which the
-        # permuted Jacobian was not triangular and a sweep that was not a march.
-        push!(downstream[donor], receiver)
-        upstream_count[receiver] += 1
+        Graphs.add_edge!(graph, donor, receiver)
     end
-    ready = [panel for panel in 1:nfaces
-             if upstream_count[panel] == 0 && cache.active[panel]]
-    order = Int[]
-    sizehint!(order, nfaces)
-    while !isempty(ready)
-        panel = pop!(ready)
-        push!(order, panel)
-        for receiver in downstream[panel]
-            upstream_count[receiver] -= 1
-            upstream_count[receiver] == 0 && push!(ready, receiver)
-        end
-    end
-    if length(order) < nfaces
-        visited = falses(nfaces)
-        visited[order] .= true
-        append!(order,
-            (panel for panel in 1:nfaces if !visited[panel] && cache.active[panel]))
-    end
-    return order
+    return graph
+end
+
+raw"""
+    upwind_cycles(cache)
+
+Groups of panels that feed one another in a loop, as strongly connected
+components of [`upwind_graph`](@ref) with more than one member.
+
+Empty on a hull whose surface flow is everywhere one-way, which is what makes
+the ordering a genuine march and the permuted Jacobian block lower triangular.
+A non-empty result says the upwind discretisation has produced a recirculation
+the ordering cannot resolve, and names the cells, which is otherwise very hard
+to see from a stalled solve.
+"""
+function upwind_cycles(cache::SurfaceBoundaryLayerCache)
+    graph = upwind_graph(cache)
+    return [group for group in Graphs.strongly_connected_components(graph)
+            if length(group) > 1]
 end
 
 raw"""
@@ -1362,11 +1387,14 @@ function _newton_solve!(states, residual, mesh, cache, inflow, shear, closure, s
         tolerance, newton_steps, step_limit, weights)
     taken = 0
     current = residual
-    linear = Ref{Any}(nothing)
+    # `nothing` until the first step builds the cache. That is a two-type
+    # union, which the compiler splits; `Ref{Any}` would genuinely box it, and
+    # this is read on every Newton step.
+    linear = nothing
     for _ in 1:newton_steps
         _weighted_norm(current, weights) / scale < tolerance && break
         jacobian = assemble_jacobian(states, mesh, cache, inflow, shear)
-        step = _newton_step(linear, jacobian, current)
+        step, linear = _newton_step(linear, jacobian, current)
         isnothing(step) && break
         accepted = false
         damping = one(eltype(states))
@@ -1595,13 +1623,18 @@ function assemble_surface_result(mesh::Mesh, cache::SurfaceBoundaryLayerCache,
     transpiration = zeros(element_type, nfaces)
     separated = falses(nfaces)
 
-    states = Vector{Any}(undef, nfaces)
+    # Only the mass defect is needed later, so store that rather than the whole
+    # per-panel state. A `Vector{Any}` of named tuples is the abstract-container
+    # case: every read goes through a boxed value, and it is one entry per
+    # panel.
+    defects = Vector{SVector{2, element_type}}(undef, nfaces)
     for panel in 1:nfaces
         own = SVector{3}(@view solution.states[:, panel])
         state = panel_fluxes(own, cache.speed[panel], cache.cosine[panel],
             cache.sine[panel], solution.shear_coefficient[panel], cache.viscosity,
             cache.closure)
-        states[panel] = state
+        defects[panel] = SVector{2}(cache.speed[panel] * state.displacement[1],
+            cache.speed[panel] * state.displacement[2])
         edge_speed[panel] = cache.speed[panel]
         momentum_thickness[panel] = state.momentum_thickness
         shape_factor[panel] = state.shape_factor
@@ -1632,9 +1665,7 @@ function assemble_surface_result(mesh::Mesh, cache::SurfaceBoundaryLayerCache,
             edge == 0 && continue
             donor = cache.edge_donor[edge]
             source = donor == 0 ? panel : donor
-            state = states[source]
-            defect = @SVector [cache.speed[source] * state.displacement[1],
-                cache.speed[source] * state.displacement[2]]
+            defect = defects[source]
             if source != panel
                 defect = rotation_into(cache.topology, cache.metrics, edge, panel) *
                          defect
