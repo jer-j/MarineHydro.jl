@@ -123,6 +123,9 @@ export deform_mesh, beam_deformation_basis
 include("crossflow_drag.jl")
 export SectionalCrossflowDrag, sectional_crossflow_geometry, crossflow_drag_loads
 
+include("shed_vorticity.jl")
+export sectional_added_mass, shed_vorticity_derivatives, separation_station
+
 include("virtual_captive_tests.jl")
 export VirtualCaptiveRun, VirtualCaptiveTest
 export virtual_captive_test, fit_captive_coefficients
