@@ -1,5 +1,7 @@
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Cthulhu = "f68482b8-f384-11e8-15f7-abe071a5a75f"
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 MarineHydro = "8d7a907f-d253-4c14-a318-41dd3f310a02"
 PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"

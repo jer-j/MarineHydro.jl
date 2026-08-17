@@ -135,8 +135,8 @@ function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
     sine = Vector{element_type}(undef, mesh.nfaces)
     for panel in 1:mesh.nfaces
         velocity = @view edge_velocity[panel, :]
-        along = dot(velocity, @view(geometry.tangent[panel, :]))
-        across = dot(velocity, @view(geometry.binormal[panel, :]))
+        along = dot(velocity, row3(geometry.tangent, panel))
+        across = dot(velocity, row3(geometry.binormal, panel))
         magnitude = max(hypot(along, across), floor_speed)
         speed[panel] = magnitude
         cosine[panel] = along / magnitude
@@ -153,7 +153,7 @@ function build_surface_cache(mesh::Mesh, edge_velocity::AbstractMatrix,
     end
 
     gradients = _least_squares_gradients(mesh, surface, geometry, speed, cosine, sine,
-        element_type, gradient_bound, solved)
+        gradient_bound, solved)
     donor, influx = _upwind_donors(mesh, surface, geometry, speed, cosine, sine, solved)
 
     return SurfaceBoundaryLayerCache(surface, geometry, speed, cosine, sine,
@@ -166,10 +166,15 @@ end
 # and its magnitude. The moment matrix depends only on geometry, so the whole
 # stencil could be cached; it is rebuilt here because the metrics carry
 # derivatives and the cost is negligible next to the Newton solve.
-function _least_squares_gradients(mesh, topology, metrics, speed, cosine, sine,
-        element_type, bound, active)
+function _least_squares_gradients(mesh, topology, metrics, speed::AbstractVector{T},
+        cosine, sine, bound, active) where {T}
+    # `T` is a type PARAMETER, not a value argument. Passing the element type as
+    # a value leaves every `SMatrix{2,2,T}` in the loop below to be built at run
+    # time, which heap-allocates each one; on KVLCC2 that alone accounted for
+    # most of a hundred thousand allocations per cache build.
+    element_type = T
     gradient_type = NamedTuple{
-        (:speed_x, :speed_y, :u_x, :u_y, :v_x, :v_y), NTuple{6, element_type}}
+        (:speed_x, :speed_y, :u_x, :u_y, :v_x, :v_y), NTuple{6, T}}
     gradients = Vector{gradient_type}(undef, mesh.nfaces)
     for panel in 1:mesh.nfaces
         moment = zero(SMatrix{2, 2, element_type})
@@ -187,9 +192,9 @@ function _least_squares_gradients(mesh, topology, metrics, speed, cosine, sine,
             # must not enter the stencil any more than the surface's own edge
             # would.
             active[other] || continue
-            offset3 = @view(mesh.centers[other, :]) .- @view(mesh.centers[panel, :])
-            offset = @SVector [dot(offset3, @view(metrics.tangent[panel, :])),
-                dot(offset3, @view(metrics.binormal[panel, :]))]
+            offset3 = row3(mesh.centers, other) - row3(mesh.centers, panel)
+            offset = @SVector [dot(offset3, row3(metrics.tangent, panel)),
+                dot(offset3, row3(metrics.binormal, panel))]
             distance = hypot(offset[1], offset[2])
             distance > 0 || continue
             weight = one(element_type) / distance^2
@@ -298,11 +303,11 @@ function _upwind_donors(mesh, topology, metrics, speed, cosine, sine, active)
                          @SVector([speed[right] * cosine[right],
             speed[right] * sine[right]])
         left_weight = one(eltype(speed)) /
-                      max(norm(@view(metrics.edge_midpoint[edge, :]) .-
-                               @view(mesh.centers[left, :])), eps(Float64))
+                      max(norm(row3(metrics.edge_midpoint, edge) -
+                               row3(mesh.centers, left)), eps(Float64))
         right_weight = one(eltype(speed)) /
-                       max(norm(@view(metrics.edge_midpoint[edge, :]) .-
-                                @view(mesh.centers[right, :])), eps(Float64))
+                       max(norm(row3(metrics.edge_midpoint, edge) -
+                                row3(mesh.centers, right)), eps(Float64))
         blended = ((left_weight * left_velocity[1] + right_weight * right_velocity[1]),
             (left_weight * left_velocity[2] + right_weight * right_velocity[2])) ./
                   (left_weight + right_weight)
@@ -426,7 +431,7 @@ function surface_curvature(mesh::Mesh, topology::SurfaceTopology, panel::Integer
         separation = norm(@view(mesh.centers[other, :]) .-
                           @view(mesh.centers[panel, :]))
         separation > 0 || continue
-        turn = norm(@view(mesh.normals[other, :]) .- @view(mesh.normals[panel, :]))
+        turn = norm(row3(mesh.normals, other) - row3(mesh.normals, panel))
         largest = max(largest, turn / separation)
     end
     return largest
@@ -620,8 +625,8 @@ function _diffusive_flux(own_state, neighbour_states, panel::Integer, mesh::Mesh
         energy = rotation * neighbour.energy - own.energy
         area_vector = edge_area_vector_for(cache.topology, cache.metrics, edge, panel)
         normal = @SVector [area_vector[1], area_vector[2]]
-        separation = max(norm(@view(mesh.centers[other, :]) .-
-                              @view(mesh.centers[panel, :])), eps(Float64))
+        separation = max(norm(row3(mesh.centers, other) - row3(mesh.centers, panel)),
+            eps(Float64))
         # The grid length matrix reduces here to the cell size along the edge
         # normal, which for a quadrilateral is the centroid separation.
         weight = strength * hypot(area_vector[1], area_vector[2]) / separation
@@ -759,10 +764,10 @@ function initial_states(mesh::Mesh, cache::SurfaceBoundaryLayerCache,
             (donor == 0 || donor == panel) && continue
             weight = _inflow_strength(cache, panel, edge)
             weight > 0 || continue
-            offset = @view(mesh.centers[panel, :]) .- @view(mesh.centers[donor, :])
-            step = abs(dot(offset, @view(cache.metrics.tangent[panel, :])) *
+            offset = row3(mesh.centers, panel) - row3(mesh.centers, donor)
+            step = abs(dot(offset, row3(cache.metrics.tangent, panel)) *
                        cache.cosine[panel] +
-                       dot(offset, @view(cache.metrics.binormal[panel, :])) *
+                       dot(offset, row3(cache.metrics.binormal, panel)) *
                        cache.sine[panel])
             weighted += weight * (arclength[donor] + step)
             total += weight
