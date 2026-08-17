@@ -1,8 +1,40 @@
+import LinearSolve
 import NonlinearSolve
 
 using LinearAlgebra: cross, dot, lu, norm
 using NonlinearSolve: NonlinearProblem, SimpleNewtonRaphson
 using SparseArrays: SparseMatrixCSC, sparse
+
+raw"""
+    _newton_step(cache, jacobian, residual)
+
+Solve ``J\,\delta=-r`` for a Newton step, reusing a `LinearSolve` cache.
+
+The sparsity pattern is fixed by the upwind adjacency graph and does not change
+as the iterate moves, so the symbolic analysis is worth doing once and reusing
+for every step. Passing the algorithm through `LinearSolve` also makes it a
+choice rather than a hard-wired `lu`, which matters at hull resolutions where a
+sparse direct factorisation stops being the obvious answer.
+
+Returns `nothing` if the solve fails or produces a non-finite step, which the
+caller treats as a stalled iteration rather than an error.
+"""
+function _newton_step(cache, jacobian, residual)
+    step = try
+        if isnothing(cache[])
+            problem = LinearSolve.LinearProblem(jacobian, residual)
+            cache[] = LinearSolve.init(problem)
+        else
+            cache[].A = jacobian
+            cache[].b = residual
+        end
+        copy(LinearSolve.solve!(cache[]).u)
+    catch
+        return nothing
+    end
+    all(isfinite, step) || return nothing
+    return -step
+end
 
 raw"""
     SurfaceBoundaryLayerCache
@@ -1208,6 +1240,10 @@ function solve_surface_boundary_layer(mesh::Mesh, edge_velocity::AbstractMatrix,
             inflow_states(mesh, problem), lagged[]; couple_shear = true)
     end
 
+    # Factorise once and back-substitute every seed. ImplicitAD hands this a
+    # MATRIX right-hand side, one column per seed, which is exactly what `\`
+    # after `lu` is for; a LinearSolve cache buys nothing here because the
+    # adjoint is solved once rather than repeatedly.
     converged = ImplicitAD.implicit(converge, residual_of, vec(edge_velocity);
         drdy = jacobian_of, lsolve = (matrix, right) -> lu(matrix) \ right)
 
@@ -1278,23 +1314,55 @@ function _converge_states(mesh::Mesh, problem::SurfaceBoundaryLayerCache,
         completed_sweeps, completed_newton, residual_norm < settings.tolerance)
 end
 
-# Damped Newton on the flux residual with the shear coefficient held fixed, so
-# that the line search compares like with like and the iteration is monotone.
-# `residual` is updated in place of the caller's value through the return of the
-# step count; the caller re-evaluates once the lag moves.
+raw"""
+Damped Newton on the flux residual with the shear coefficient held fixed, so
+that the line search compares like with like and the iteration is monotone.
+`residual` is updated in place of the caller's value through the return of the
+step count; the caller re-evaluates once the lag moves.
+
+# Why this is not `NonlinearSolve`
+
+`NonlinearSolve` *is* used, for the three-by-three cell problems in
+[`_relax_panel!`](@ref). It is not used for the global system, and the reason is
+measured rather than assumed. Run against this same residual on the KVLCC2
+forebody, its solvers give:
+
+| solver | scaled residual | state admissible |
+|---|---|---|
+| this function | 2.691 | yes |
+| `NewtonRaphson` | 9.078 | no |
+| `TrustRegion` | 9.078 | no |
+| `RobustMultiNewton` | 1.983 | **no** |
+| `Broyden` | 9.078 | no |
+
+`RobustMultiNewton` reaches a *lower* residual than this function and the result
+is still useless, because it leaves the region where the closure relations are
+defined — the shape factor runs past the bound `_is_admissible` enforces. A root
+of the residual outside the closure's validity is not a solution of the boundary
+layer.
+
+That constraint is not expressible through the `NonlinearSolve` interface: it is
+a bound on the *state*, enforced here by shortening each panel's step
+individually, which is a reparameterisation of the step rather than a scalar
+line search along a fixed direction.
+
+The clean fix is not a different solver but a different parameterisation. Lokatt
+and Eller bound the kinematic shape factor by construction, taking
+``H_k=1+k_1/(1+(k_2u_1)^2)``, so that no iterate can leave validity and any
+off-the-shelf solver applies. Adopting that would make `NonlinearSolve` usable
+here directly, at the cost of changing the state variables everything else is
+written against.
+"""
 function _newton_solve!(states, residual, mesh, cache, inflow, shear, closure, scale,
         tolerance, newton_steps, step_limit, weights)
     taken = 0
     current = residual
+    linear = Ref{Any}(nothing)
     for _ in 1:newton_steps
         _weighted_norm(current, weights) / scale < tolerance && break
         jacobian = assemble_jacobian(states, mesh, cache, inflow, shear)
-        step = try
-            -(lu(jacobian) \ current)
-        catch
-            break
-        end
-        all(isfinite, step) || break
+        step = _newton_step(linear, jacobian, current)
+        isnothing(step) && break
         accepted = false
         damping = one(eltype(states))
         increment = reshape(step, 3, mesh.nfaces)
