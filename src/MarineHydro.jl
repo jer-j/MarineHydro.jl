@@ -126,6 +126,10 @@ export SectionalCrossflowDrag, sectional_crossflow_geometry, crossflow_drag_load
 include("shed_vorticity.jl")
 export sectional_added_mass, shed_vorticity_derivatives, separation_station
 
+include("empirical_derivatives.jl")
+export HullParticulars, empirical_sway_derivatives, empirical_methods
+export clarke_full_derivatives, hirano_takashina_derivatives
+
 include("virtual_captive_tests.jl")
 export VirtualCaptiveRun, VirtualCaptiveTest
 export virtual_captive_test, fit_captive_coefficients

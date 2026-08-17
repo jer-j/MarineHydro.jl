@@ -8,6 +8,7 @@ using Test
     include("./mesh_deformation.jl")
     include("./crossflow_drag.jl")
     include("./shed_vorticity.jl")
+    include("./empirical_derivatives.jl")
     include("./virtual_captive_tests.jl")
     include("./boundary_layers.jl")
     include("./three_dimensional_boundary_layer.jl")
